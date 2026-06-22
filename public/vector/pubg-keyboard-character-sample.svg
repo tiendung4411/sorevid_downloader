@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Helmeted Keyboard Sticker Character - Vector Sample</title>
+  <desc id="desc">A sticker-style vector character wearing a gold gaming helmet, white shirt, black tie, red scarf, and giving a thumbs up.</desc>
+  <defs>
+    <linearGradient id="helmetGold" x1="145" y1="60" x2="320" y2="235" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff36b"/>
+      <stop offset=".2" stop-color="#d8a70d"/>
+      <stop offset=".56" stop-color="#7c4f05"/>
+      <stop offset="1" stop-color="#f0c11e"/>
+    </linearGradient>
+    <linearGradient id="shirtShade" x1="95" y1="240" x2="360" y2="475" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset=".5" stop-color="#f7fbff"/>
+      <stop offset="1" stop-color="#cbdde5"/>
+    </linearGradient>
+    <linearGradient id="tieRed" x1="226" y1="238" x2="294" y2="390" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ff386d"/>
+      <stop offset=".55" stop-color="#d91450"/>
+      <stop offset="1" stop-color="#8e0d35"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="5" stdDeviation="4" flood-color="#000000" flood-opacity=".22"/>
+    </filter>
+    <style>
+      .ink{stroke:#050505;stroke-width:10;stroke-linecap:round;stroke-linejoin:round}
+      .detail{stroke:#050505;stroke-width:6;stroke-linecap:round;stroke-linejoin:round}
+      .fine{stroke:#050505;stroke-width:4;stroke-linecap:round;stroke-linejoin:round}
+      .glow-lime{fill:none;stroke:#8cc83e;stroke-width:31;stroke-linecap:round;stroke-linejoin:round}
+      .glow-yellow{fill:none;stroke:#f1e51d;stroke-width:20;stroke-linecap:round;stroke-linejoin:round}
+    </style>
+  </defs>
+
+  <g filter="url(#softShadow)">
+    <path class="glow-lime" d="M120 420 67 408 51 358 82 284 142 250 130 210 111 151 124 100 166 58 224 45 275 57 306 86 335 92 353 115 349 150 333 169 312 215 348 249 372 346 396 443 313 463 211 462Z"/>
+    <path class="glow-yellow" d="M120 420 67 408 51 358 82 284 142 250 130 210 111 151 124 100 166 58 224 45 275 57 306 86 335 92 353 115 349 150 333 169 312 215 348 249 372 346 396 443 313 463 211 462Z"/>
+
+    <path fill="#050505" d="M118 418 70 406 55 358 85 288 146 253 136 214 117 154 130 103 169 65 224 53 272 64 300 92 329 97 345 117 342 147 326 163 304 213 340 253 365 347 386 438 312 454 214 454Z"/>
+
+    <path class="ink" fill="url(#shirtShade)" d="M117 399 141 274 191 238 230 280 277 241 333 273 373 436Q286 462 194 448 154 443 117 399Z"/>
+    <path class="ink" fill="#ffffff" d="M143 274 187 239 225 283 196 421Q166 365 143 274Z"/>
+    <path class="ink" fill="#ffffff" d="M277 242 331 272 369 433Q332 448 294 452L247 284Z"/>
+    <path class="detail" fill="#ffffff" d="M186 238 226 273 206 302 160 264Z"/>
+    <path class="detail" fill="#ffffff" d="M278 241 246 275 267 303 314 265Z"/>
+    <path class="detail" fill="#050505" d="M230 286 246 286 270 451 215 451Z"/>
+
+    <path class="ink" fill="#f7fbff" d="M143 277Q93 305 72 359 69 385 86 401 104 417 137 412L170 301Z"/>
+    <path class="detail" fill="#dbe8ef" d="M111 314Q118 363 95 397 115 406 140 398 150 353 154 306Z"/>
+    <path class="ink" fill="#f3c99f" d="M97 313Q73 332 70 366 69 383 81 391 92 398 109 388L121 375 132 379Q151 383 157 368 164 351 145 343L135 339 145 315Q150 297 138 291 124 284 111 302Z"/>
+    <path class="detail" fill="none" d="M106 320Q116 342 105 369"/>
+    <path class="detail" fill="none" d="M124 321 118 374"/>
+    <path class="detail" fill="none" d="M136 339Q126 348 132 363"/>
+
+    <path class="ink" fill="#f2c49b" d="M231 174 288 175 304 208Q293 232 257 235 223 235 208 214Z"/>
+    <path class="fine" fill="#d49b73" d="M217 206Q246 217 284 205 276 225 249 226 229 225 217 206Z"/>
+    <path class="fine" fill="none" d="M244 207Q259 203 276 207"/>
+    <path class="detail" fill="#f1b83c" d="M256 228Q273 228 282 220 278 241 264 243 253 241 256 228Z"/>
+
+    <path class="ink" fill="#f2c49b" d="M174 159 197 136 294 137 318 158 309 190 269 200 220 190 190 178Z"/>
+    <path fill="#cf916a" d="M198 168Q252 185 305 169L305 189Q258 206 211 191Z"/>
+
+    <path class="ink" fill="url(#helmetGold)" d="M126 154Q117 105 151 76 184 47 234 55 280 62 302 96 326 100 341 120 349 138 338 154L316 155 308 183Q249 205 191 177L182 143Z"/>
+    <path class="detail" fill="#050505" d="M136 151Q140 92 195 72 163 102 164 164Z"/>
+    <path class="detail" fill="#5b3a05" d="M211 103 255 87 302 96 316 118 286 118 237 113Z"/>
+    <path fill="#ffffff" d="M219 72Q252 69 278 90 245 92 216 83Z"/>
+    <path fill="#fff9b8" opacity=".6" d="M164 92Q190 67 225 65 196 85 178 125Z"/>
+    <path class="ink" fill="#8a5a08" d="M180 128 208 104 326 108Q346 108 349 129 352 151 333 154L219 157 198 178Z"/>
+    <path class="detail" fill="#f4cf32" d="M216 119 319 123Q331 123 334 132L228 135 207 151Z"/>
+    <path class="detail" fill="#ffffff" d="M283 124 319 126"/>
+    <path class="fine" fill="none" d="M246 120 240 142"/>
+    <path class="fine" fill="none" d="M260 121 253 141"/>
+    <path class="fine" fill="none" d="M273 122 267 141"/>
+    <path class="ink" fill="#050505" d="M219 157 330 154 316 179Q265 188 213 175Z"/>
+    <path class="detail" fill="#b7770b" d="M202 179Q251 201 312 183"/>
+
+    <path class="ink" fill="url(#tieRed)" d="M216 263Q233 239 252 260 246 279 228 286 218 281 216 263Z"/>
+    <path class="ink" fill="url(#tieRed)" d="M222 286Q196 315 185 390 223 369 244 306Z"/>
+    <path class="ink" fill="url(#tieRed)" d="M248 284Q284 315 320 365 294 374 267 347 254 329 241 305Z"/>
+    <path fill="#ff6b91" opacity=".6" d="M225 258Q236 250 247 262 236 262 226 268Z"/>
+
+    <path class="fine" fill="none" d="M164 332Q195 353 190 428"/>
+    <path class="fine" fill="none" d="M321 304Q302 355 317 431"/>
+    <path class="fine" fill="none" d="M139 288Q160 292 177 307"/>
+  </g>
+</svg>

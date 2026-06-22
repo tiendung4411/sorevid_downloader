@@ -1,0 +1,50 @@
+.sorevid-player-host {
+  position: absolute !important;
+  z-index: 2147483646 !important;
+  top: 14px !important;
+  right: 14px !important;
+  pointer-events: auto !important;
+}
+
+.sorevid-player-button {
+  min-height: 36px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 7px !important;
+  padding: 0 12px !important;
+  border: 1px solid rgba(255, 255, 255, 0.28) !important;
+  border-radius: 8px !important;
+  color: #fff !important;
+  background: rgba(15, 23, 42, 0.88) !important;
+  box-shadow: 0 5px 18px rgba(0, 0, 0, 0.25) !important;
+  backdrop-filter: blur(8px) !important;
+  font: 700 13px/1 system-ui, sans-serif !important;
+  cursor: pointer !important;
+}
+
+.sorevid-player-button:hover {
+  background: #1463ff !important;
+}
+
+.sorevid-player-button:disabled {
+  cursor: wait !important;
+  opacity: 0.7 !important;
+}
+
+.sorevid-toast {
+  position: fixed !important;
+  z-index: 2147483647 !important;
+  right: 18px !important;
+  bottom: 18px !important;
+  max-width: 340px !important;
+  padding: 11px 14px !important;
+  border-radius: 9px !important;
+  color: #fff !important;
+  background: #157347 !important;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.28) !important;
+  font: 700 13px/1.4 system-ui, sans-serif !important;
+}
+
+.sorevid-toast.error {
+  background: #b42318 !important;
+}

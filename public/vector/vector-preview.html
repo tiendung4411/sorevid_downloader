@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vector Sticker Preview</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background:
+          linear-gradient(45deg, #d8d8d8 25%, transparent 25%),
+          linear-gradient(-45deg, #d8d8d8 25%, transparent 25%),
+          linear-gradient(45deg, transparent 75%, #d8d8d8 75%),
+          linear-gradient(-45deg, transparent 75%, #d8d8d8 75%);
+        background-color: #f4f4f4;
+        background-position:
+          0 0,
+          0 16px,
+          16px -16px,
+          -16px 0;
+        background-size: 32px 32px;
+      }
+
+      img {
+        width: min(78vmin, 640px);
+        height: auto;
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <img src="./pubg-keyboard-character-sample.svg" alt="Vector sticker character sample" />
+  </body>
+</html>

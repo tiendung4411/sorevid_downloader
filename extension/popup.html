@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sorevid Downloader</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <img src="icons/icon.png" alt="" />
+        <div>
+          <strong>Sorevid Downloader</strong>
+          <span id="platform">Checking current tab…</span>
+        </div>
+      </header>
+      <section class="page-card">
+        <strong id="title">Current page</strong>
+        <span id="url"></span>
+      </section>
+      <div id="status" class="status idle">Ready to send this page to the desktop app.</div>
+      <button id="send" type="button">Open in Sorevid</button>
+      <p>Sorevid will open and fill the URL. Review your download options there.</p>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

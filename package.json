@@ -1,0 +1,44 @@
+{
+  "name": "bilibili-downloader",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "debug:app:mac": "env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH npm run tauri -- build --debug --bundles app && open -n \"src-tauri/target/debug/bundle/macos/BiliBili Downloader.app\"",
+    "tauri:dev": "tauri dev",
+    "web:dev": "vite",
+    "build": "tsc -b && vite build",
+    "build:extension": "tsc -p extension/tsconfig.json && node extension/copy-assets.mjs",
+    "build:all": "npm run build && npm run build:extension",
+    "tauri": "tauri",
+    "tauri:build": "tauri build",
+    "fetch:sidecars:mac": "node scripts/fetch-sidecars-macos.mjs",
+    "fetch:sidecars:win": "node scripts/fetch-sidecars-windows.mjs",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "lucide-react": "^1.20.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@tauri-apps/cli": "^2.11.2",
+    "@types/node": "^24.12.3",
+    "@types/chrome": "^0.1.35",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "eslint": "^10.3.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.6.0",
+    "typescript": "~6.0.2",
+    "typescript-eslint": "^8.59.2",
+    "vite": "^8.0.12"
+  }
+}
