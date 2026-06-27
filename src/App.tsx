@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
 import {
   CheckCircle2,
+  Bell,
   Cable,
   Download,
   FileText,
@@ -200,6 +201,7 @@ type AppSettings = {
   cookieMode: CookieMode
   manualCookiePath: string
   downloadPreset: DownloadPreset
+  audioNotifications: boolean
   subtitleMode: SubtitleMode
   subtitleFormat: SubtitleFormat
   embedSubtitles: boolean
@@ -276,6 +278,7 @@ const defaultSettings: AppSettings = {
   cookieMode: 'none',
   manualCookiePath: '',
   downloadPreset: 'compatibleMp4',
+  audioNotifications: true,
   subtitleMode: 'off',
   subtitleFormat: 'srt',
   embedSubtitles: false,
@@ -287,6 +290,65 @@ const defaultSettings: AppSettings = {
 
 const isTauriRuntime = () =>
   typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+
+type AudioNotificationTone = 'start' | 'progress' | 'complete' | 'failed'
+
+type JobAudioState = {
+  status?: JobStatus
+}
+
+type BrowserAudioContext = typeof AudioContext
+
+let notificationAudioContext: AudioContext | null = null
+
+function getNotificationAudioContext() {
+  if (typeof window === 'undefined') return null
+  const AudioContextCtor = (window.AudioContext ||
+    (window as Window & { webkitAudioContext?: BrowserAudioContext }).webkitAudioContext)
+  if (!AudioContextCtor) return null
+  notificationAudioContext ??= new AudioContextCtor()
+  return notificationAudioContext
+}
+
+function unlockNotificationAudio() {
+  const context = getNotificationAudioContext()
+  if (!context) return
+  void context.resume().catch(() => undefined)
+}
+
+function playNotificationTone(tone: AudioNotificationTone) {
+  const context = getNotificationAudioContext()
+  if (!context) return
+
+  void context.resume().then(() => {
+    const startedAt = context.currentTime
+    const tones: Record<AudioNotificationTone, number[]> = {
+      start: [660, 880],
+      progress: [740],
+      complete: [660, 880, 1175],
+      failed: [220, 165],
+    }
+    const duration = tone === 'progress' ? 0.09 : 0.13
+
+    tones[tone].forEach((frequency, index) => {
+      const oscillator = context.createOscillator()
+      const gain = context.createGain()
+      const noteStart = startedAt + index * (duration + 0.035)
+      const noteEnd = noteStart + duration
+
+      oscillator.type = tone === 'failed' ? 'sawtooth' : 'sine'
+      oscillator.frequency.setValueAtTime(frequency, noteStart)
+      gain.gain.setValueAtTime(0.0001, noteStart)
+      gain.gain.exponentialRampToValueAtTime(tone === 'failed' ? 0.08 : 0.055, noteStart + 0.015)
+      gain.gain.exponentialRampToValueAtTime(0.0001, noteEnd)
+
+      oscillator.connect(gain)
+      gain.connect(context.destination)
+      oscillator.start(noteStart)
+      oscillator.stop(noteEnd + 0.02)
+    })
+  }).catch(() => undefined)
+}
 
 const platformConfigs: Record<PlatformKey, { label: string; hosts: string[]; sessionRequired: boolean }> = {
   bilibili: {
@@ -362,6 +424,7 @@ function App() {
   const [geminiModel, setGeminiModel] = useState('gemini-3.1-flash-lite')
   const [cookieMode, setCookieMode] = useState<CookieMode>('none')
   const [manualCookiePath, setManualCookiePath] = useState('')
+  const [audioNotifications, setAudioNotifications] = useState(true)
   const [cookieProfiles, setCookieProfiles] = useState<Record<string, CookieProfile>>({})
   const [tools, setTools] = useState<ToolVersions>(defaultTools)
   const [checkingTools, setCheckingTools] = useState(false)
@@ -385,6 +448,8 @@ function App() {
   const [cookieBusyPlatform, setCookieBusyPlatform] = useState('')
   const [cookieMessage, setCookieMessage] = useState('')
   const [organizingBatch, setOrganizingBatch] = useState(false)
+  const audioNotificationsRef = useRef(audioNotifications)
+  const jobAudioStateRef = useRef<Map<string, JobAudioState>>(new Map())
 
   const urls = useMemo(
     () => collectUrlsFromText(urlsText),
@@ -432,6 +497,13 @@ function App() {
   const effectiveDanmakuFormat = hasBilibiliUrl ? danmakuFormat : 'none'
 
   useEffect(() => {
+    audioNotificationsRef.current = audioNotifications
+    if (audioNotifications) {
+      unlockNotificationAudio()
+    }
+  }, [audioNotifications])
+
+  useEffect(() => {
     refreshTools()
     loadSavedSettings()
     refreshChromeIntegration()
@@ -467,6 +539,7 @@ function App() {
 
     importExtensionUrls()
     const unlisten = listen<DownloadEvent>('download-event', ({ payload }) => {
+      handleDownloadAudioNotification(payload)
       setJobs((currentJobs) => {
         let matched = false
         const updatedJobs = currentJobs.map((job) => {
@@ -541,6 +614,7 @@ function App() {
       cookieMode,
       manualCookiePath,
       downloadPreset,
+      audioNotifications,
       subtitleMode,
       subtitleFormat,
       embedSubtitles,
@@ -561,6 +635,7 @@ function App() {
   }, [
     cookieMode,
     cookieProfiles,
+    audioNotifications,
     effectiveDanmakuFormat,
     downloadDir,
     downloadPreset,
@@ -586,6 +661,7 @@ function App() {
       setSubtitleMode(isSubtitleMode(settings.subtitleMode) ? settings.subtitleMode : 'off')
       setSubtitleFormat(isSubtitleFormat(settings.subtitleFormat) ? settings.subtitleFormat : 'srt')
       setEmbedSubtitles(Boolean(settings.embedSubtitles))
+      setAudioNotifications(settings.audioNotifications ?? true)
       setDanmakuFormat(isDanmakuFormat(settings.danmakuFormat) ? settings.danmakuFormat : 'none')
       setGeminiApiKey(settings.geminiApiKey || '')
       setGeminiModel(settings.geminiModel || 'gemini-3.1-flash-lite')
@@ -898,6 +974,9 @@ function App() {
 
   async function startDownload() {
     setError('')
+    if (audioNotificationsRef.current) {
+      unlockNotificationAudio()
+    }
 
     if (startingDownload) {
       return
@@ -1064,6 +1143,28 @@ function App() {
     } finally {
       setStartingDownload(false)
     }
+  }
+
+  function handleDownloadAudioNotification(event: DownloadEvent) {
+    if (!audioNotificationsRef.current) return
+
+    const state = jobAudioStateRef.current.get(event.jobId) || {}
+    const previousStatus = state.status
+
+    if (event.status !== previousStatus) {
+      state.status = event.status
+      if (event.status === 'starting') {
+        playNotificationTone('start')
+      } else if (event.status === 'completed') {
+        playNotificationTone('complete')
+      } else if (event.status === 'failed' || event.status === 'canceled') {
+        playNotificationTone('failed')
+      } else if (event.status === 'warning') {
+        playNotificationTone('progress')
+      }
+    }
+
+    jobAudioStateRef.current.set(event.jobId, state)
   }
 
   async function cancelDownload(jobId: string) {
@@ -1396,6 +1497,31 @@ function App() {
               <ToolBadge label="yt-dlp" tool={tools.ytDlp} />
               <ToolBadge label="ffmpeg" tool={tools.ffmpeg} />
               <ToolBadge label="ffprobe" tool={tools.ffprobe} />
+            </section>
+
+            <section className="settings-panel" aria-label="Audio notification settings">
+              <div className="settings-heading">
+                <div>
+                  <strong>Audio notifications</strong>
+                  <span>Play short sounds when downloads start, complete, fail, or need attention.</span>
+                </div>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => playNotificationTone('complete')}
+                >
+                  <Bell />
+                  <span>Test sound</span>
+                </button>
+              </div>
+              <label className="check-row">
+                <input
+                  type="checkbox"
+                  checked={audioNotifications}
+                  onChange={(event) => setAudioNotifications(event.target.checked)}
+                />
+                <span>Enable download sounds</span>
+              </label>
             </section>
 
             <section className="settings-panel" aria-label="AI organizer settings">

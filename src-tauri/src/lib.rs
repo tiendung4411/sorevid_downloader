@@ -172,6 +172,8 @@ struct AppSettings {
     cookie_mode: String,
     manual_cookie_path: String,
     download_preset: String,
+    #[serde(default = "default_audio_notifications")]
+    audio_notifications: bool,
     #[serde(default = "default_subtitle_mode")]
     subtitle_mode: String,
     #[serde(default = "default_subtitle_format")]
@@ -3027,6 +3029,7 @@ fn default_settings() -> AppSettings {
         cookie_mode: "none".to_string(),
         manual_cookie_path: String::new(),
         download_preset: "compatibleMp4".to_string(),
+        audio_notifications: default_audio_notifications(),
         subtitle_mode: default_subtitle_mode(),
         subtitle_format: default_subtitle_format(),
         embed_subtitles: false,
@@ -3039,6 +3042,10 @@ fn default_settings() -> AppSettings {
 
 fn default_subtitle_mode() -> String {
     "off".to_string()
+}
+
+fn default_audio_notifications() -> bool {
+    true
 }
 
 fn default_subtitle_format() -> String {
