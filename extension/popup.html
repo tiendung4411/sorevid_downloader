@@ -19,8 +19,21 @@
         <strong id="title">Current page</strong>
         <span id="url"></span>
       </section>
+      <section id="scan-options" class="scan-options" hidden>
+        <label>
+          <span>Scan limit</span>
+          <select id="scan-limit">
+            <option value="10">10 videos</option>
+            <option value="20" selected>20 videos</option>
+            <option value="50">50 videos</option>
+            <option value="100">100 videos</option>
+            <option value="0">All visible videos</option>
+          </select>
+        </label>
+      </section>
       <div id="status" class="status idle">Ready to send this page to the desktop app.</div>
       <button id="send" type="button">Open in Sorevid</button>
+      <button id="scan" type="button" class="secondary" hidden>Scan TikTok Profile</button>
       <p>Sorevid will open and fill the URL. Review your download options there.</p>
     </main>
     <script type="module" src="popup.js"></script>

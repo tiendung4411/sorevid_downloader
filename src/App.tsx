@@ -27,10 +27,11 @@ type DownloadPreset =
   | 'videoOnly'
   | 'originalCodec'
 type CookieMode = 'none' | 'chrome' | 'manual'
-type PlatformKey = 'bilibili' | 'douyin'
+type PlatformKey = 'bilibili' | 'douyin' | 'tiktok'
 type SubtitleMode = 'off' | 'subtitles' | 'auto' | 'both'
 type SubtitleFormat = 'srt' | 'vtt'
 type DanmakuFormat = 'none' | 'xml' | 'ass'
+type BatchOrderMode = 'asScanned' | 'reverse' | 'episodeNumber'
 type JobStatus =
   | 'queued'
   | 'starting'
@@ -84,6 +85,80 @@ type MetadataPreview = {
   audioCodecs: string[]
   requiresSession: boolean
   warning?: string
+  directMediaUrl?: string
+  subtitleUrl?: string
+  isPinned?: boolean
+}
+
+type BatchItemEdit = {
+  seriesTitle?: string
+  episodeNumber?: number
+  episodeTitle?: string
+}
+
+type OrganizedBatchItem = {
+  item: MetadataPreview
+  key: string
+  seriesTitle: string
+  episodeNumber: number
+  episodeTitle: string
+  suggested: BatchItemEdit
+  outputTitle: string
+}
+
+type OrganizedSeries = {
+  id: string
+  title: string
+  items: OrganizedBatchItem[]
+}
+
+type ResolvedSubtitle = {
+  format?: string
+  language?: string
+  url: string
+}
+
+type ResolvedMediaItem = {
+  sourceUrl: string
+  pageUrl: string
+  mediaUrl: string
+  title?: string
+  uploader?: string
+  duration?: number
+  thumbnail?: string
+  videoCodec?: string
+  audioCodec?: string
+  width?: number
+  height?: number
+  subtitles?: ResolvedSubtitle[]
+  isPinned?: boolean
+}
+
+type ExtensionImportPayload = {
+  urls: string[]
+  resolvedMedia: ResolvedMediaItem[]
+}
+
+type AiBatchInputItem = {
+  key: string
+  url: string
+  title: string
+  uploader?: string
+  scanIndex: number
+  episodeNumber?: number
+  isPinned: boolean
+}
+
+type AiBatchResult = {
+  series: {
+    seriesTitle: string
+    episodes: {
+      key: string
+      url: string
+      episodeNumber: number
+      episodeTitle?: string
+    }[]
+  }[]
 }
 
 type MediaReport = {
@@ -126,6 +201,8 @@ type AppSettings = {
   embedSubtitles: boolean
   danmakuFormat: DanmakuFormat
   cookieProfiles: Record<string, CookieProfile>
+  geminiApiKey: string
+  geminiModel: string
 }
 
 type DownloadJob = {
@@ -140,6 +217,23 @@ type DownloadJob = {
   outputPath?: string
   mediaReport?: MediaReport
   converting?: boolean
+}
+
+type DirectDownloadItem = {
+  sourceUrl: string
+  pageUrl: string
+  mediaUrl: string
+  title?: string
+  uploader?: string
+  duration?: number
+  thumbnail?: string
+  videoCodec?: string
+  audioCodec?: string
+  width?: number
+  height?: number
+  subtitles?: ResolvedSubtitle[]
+  outputFolder?: string
+  outputFilename?: string
 }
 
 type ChromeIntegrationStatus = {
@@ -182,19 +276,28 @@ const defaultSettings: AppSettings = {
   embedSubtitles: false,
   danmakuFormat: 'none',
   cookieProfiles: {},
+  geminiApiKey: '',
+  geminiModel: 'gemini-3.1-flash-lite',
 }
 
 const isTauriRuntime = () =>
   typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
-const platformConfigs: Record<PlatformKey, { label: string; hosts: string[] }> = {
+const platformConfigs: Record<PlatformKey, { label: string; hosts: string[]; sessionRequired: boolean }> = {
   bilibili: {
     label: 'BiliBili',
     hosts: ['bilibili.com', 'b23.tv', 'space.bilibili.com'],
+    sessionRequired: true,
   },
   douyin: {
     label: 'Douyin',
     hosts: ['douyin.com', 'iesdouyin.com', 'amemv.com'],
+    sessionRequired: true,
+  },
+  tiktok: {
+    label: 'TikTok',
+    hosts: ['tiktok.com', 'vm.tiktok.com', 'vt.tiktok.com'],
+    sessionRequired: false,
   },
 }
 
@@ -229,6 +332,19 @@ function isBilibiliChannelUrl(url: string) {
   )
 }
 
+function isTikTokChannelUrl(url: string) {
+  const value = normalizeUrlCandidate(url)?.toLowerCase() || url.trim().toLowerCase()
+  try {
+    const parsed = new URL(value)
+    return (
+      (parsed.hostname === 'tiktok.com' || parsed.hostname.endsWith('.tiktok.com')) &&
+      /^\/@[^/]/.test(parsed.pathname)
+    )
+  } catch {
+    return value.includes('tiktok.com/@')
+  }
+}
+
 function App() {
   const [urlsText, setUrlsText] = useState('')
   const [downloadDir, setDownloadDir] = useState('')
@@ -237,6 +353,8 @@ function App() {
   const [subtitleFormat, setSubtitleFormat] = useState<SubtitleFormat>('srt')
   const [embedSubtitles, setEmbedSubtitles] = useState(false)
   const [danmakuFormat, setDanmakuFormat] = useState<DanmakuFormat>('none')
+  const [geminiApiKey, setGeminiApiKey] = useState('')
+  const [geminiModel, setGeminiModel] = useState('gemini-3.1-flash-lite')
   const [cookieMode, setCookieMode] = useState<CookieMode>('none')
   const [manualCookiePath, setManualCookiePath] = useState('')
   const [cookieProfiles, setCookieProfiles] = useState<Record<string, CookieProfile>>({})
@@ -244,6 +362,8 @@ function App() {
   const [checkingTools, setCheckingTools] = useState(false)
   const [metadata, setMetadata] = useState<MetadataPreview[]>([])
   const [selectedPreviewKeys, setSelectedPreviewKeys] = useState<Set<string>>(new Set())
+  const [batchEdits, setBatchEdits] = useState<Record<string, BatchItemEdit>>({})
+  const [batchOrder, setBatchOrder] = useState<BatchOrderMode>('asScanned')
   const [checkingMetadata, setCheckingMetadata] = useState(false)
   const [coverPaths, setCoverPaths] = useState<Record<string, string>>({})
   const [savingCoverUrl, setSavingCoverUrl] = useState('')
@@ -258,6 +378,7 @@ function App() {
   const [cookieStatuses, setCookieStatuses] = useState<Record<string, CookieFileStatus>>({})
   const [cookieBusyPlatform, setCookieBusyPlatform] = useState('')
   const [cookieMessage, setCookieMessage] = useState('')
+  const [organizingBatch, setOrganizingBatch] = useState(false)
 
   const urls = useMemo(
     () => collectUrlsFromText(urlsText),
@@ -279,15 +400,27 @@ function App() {
     [urls],
   )
 
+  const hasTikTokChannelUrl = useMemo(
+    () => urls.some(isTikTokChannelUrl),
+    [urls],
+  )
+
   const missingCookiePlatforms = useMemo(
     () =>
-      requiredPlatformKeys.filter((key) => !cookieProfileReady(getCookieProfile(cookieProfiles, key))),
+      requiredPlatformKeys.filter(
+        (key) => platformConfigs[key].sessionRequired && !cookieProfileReady(getCookieProfile(cookieProfiles, key)),
+      ),
     [cookieProfiles, requiredPlatformKeys],
   )
 
   const selectedMetadata = useMemo(
     () => metadata.filter((item) => selectedPreviewKeys.has(previewKey(item))),
     [metadata, selectedPreviewKeys],
+  )
+
+  const organizedBatch = useMemo(
+    () => organizeMetadataBatch(metadata, batchEdits, batchOrder),
+    [batchEdits, batchOrder, metadata],
   )
 
   const effectiveDanmakuFormat = hasBilibiliUrl ? danmakuFormat : 'none'
@@ -303,13 +436,22 @@ function App() {
 
     const importExtensionUrls = async () => {
       try {
-        const imported = await invoke<string[]>('drain_extension_imports')
-        if (imported.length > 0) {
-          setUrlsText((current) => mergeUrlText(current, imported))
-          setMetadata([])
-          setSelectedPreviewKeys(new Set())
+        const imported = await invoke<ExtensionImportPayload>('drain_extension_imports')
+        const resolvedPreviews = imported.resolvedMedia.map(metadataFromResolvedMedia)
+        if (imported.urls.length > 0 || resolvedPreviews.length > 0) {
+          if (resolvedPreviews.length === 0) {
+            setUrlsText((current) => mergeUrlText(current, imported.urls))
+          }
+          setMetadata((current) => mergeMetadataPreviews(current, resolvedPreviews))
+          setSelectedPreviewKeys((current) => {
+            const next = new Set(current)
+            resolvedPreviews.forEach((item) => next.add(previewKey(item)))
+            return next
+          })
           setChromeIntegrationMessage(
-            `${imported.length} URL${imported.length === 1 ? '' : 's'} received from Chrome.`,
+            resolvedPreviews.length > 0
+              ? `${resolvedPreviews.length} resolved TikTok item${resolvedPreviews.length === 1 ? '' : 's'} received from Chrome.`
+              : `${imported.urls.length} URL${imported.urls.length === 1 ? '' : 's'} received from Chrome.`,
           )
         }
       } catch (err) {
@@ -319,10 +461,12 @@ function App() {
 
     importExtensionUrls()
     const unlisten = listen<DownloadEvent>('download-event', ({ payload }) => {
-      setJobs((currentJobs) =>
-        currentJobs.map((job) => {
+      setJobs((currentJobs) => {
+        let matched = false
+        const updatedJobs = currentJobs.map((job) => {
           if (job.id !== payload.jobId) return job
 
+          matched = true
           return {
             ...job,
             status: payload.status,
@@ -332,13 +476,48 @@ function App() {
             outputPath: payload.outputPath ?? job.outputPath,
             mediaReport: payload.mediaReport ?? job.mediaReport,
             logs: payload.line
-              ? [...job.logs.slice(-80), payload.line]
+              ? appendJobLog(job.logs, payload.line)
               : job.logs,
           }
-        }),
-      )
+        })
+
+        if (matched) return updatedJobs
+
+        const queuedDirectIndex = updatedJobs.findIndex(
+          (job) =>
+            job.id.startsWith('queued-') &&
+            job.id.endsWith('-direct') &&
+            job.status === 'queued',
+        )
+        const eventJob: DownloadJob = {
+          id: payload.jobId,
+          urls: [],
+          titles: [],
+          status: payload.status,
+          percent: payload.percent,
+          speed: payload.speed,
+          eta: payload.eta,
+          outputPath: payload.outputPath,
+          mediaReport: payload.mediaReport,
+          logs: payload.line ? appendJobLog([], payload.line) : [],
+        }
+
+        if (queuedDirectIndex >= 0) {
+          const next = [...updatedJobs]
+          const queued = next[queuedDirectIndex]
+          next[queuedDirectIndex] = {
+            ...eventJob,
+            urls: queued.urls,
+            titles: queued.titles,
+            logs: [...queued.logs, ...eventJob.logs],
+          }
+          return next
+        }
+
+        return [eventJob, ...updatedJobs]
+      })
     })
-    const unlistenExtension = listen<string[]>('extension-import', () => {
+    const unlistenExtension = listen<ExtensionImportPayload>('extension-import', () => {
       importExtensionUrls()
     })
 
@@ -361,6 +540,8 @@ function App() {
       embedSubtitles,
       danmakuFormat: effectiveDanmakuFormat,
       cookieProfiles,
+      geminiApiKey,
+      geminiModel,
     }
 
     if (!isTauriRuntime()) {
@@ -378,6 +559,8 @@ function App() {
     downloadDir,
     downloadPreset,
     embedSubtitles,
+    geminiApiKey,
+    geminiModel,
     manualCookiePath,
     settingsLoaded,
     subtitleFormat,
@@ -398,6 +581,8 @@ function App() {
       setSubtitleFormat(isSubtitleFormat(settings.subtitleFormat) ? settings.subtitleFormat : 'srt')
       setEmbedSubtitles(Boolean(settings.embedSubtitles))
       setDanmakuFormat(isDanmakuFormat(settings.danmakuFormat) ? settings.danmakuFormat : 'none')
+      setGeminiApiKey(settings.geminiApiKey || '')
+      setGeminiModel(settings.geminiModel || 'gemini-3.1-flash-lite')
       setDownloadPreset(
         isDownloadPreset(settings.downloadPreset)
           ? settings.downloadPreset
@@ -599,7 +784,9 @@ function App() {
       new Set(targetUrls.map(getPlatformForUrl).filter(Boolean) as PlatformKey[]),
     )
 
-    const missing = platformKeys.filter((key) => !cookieProfileReady(getCookieProfile(cookieProfiles, key)))
+    const missing = platformKeys.filter(
+      (key) => platformConfigs[key].sessionRequired && !cookieProfileReady(getCookieProfile(cookieProfiles, key)),
+    )
     if (missing.length > 0) {
       return {
         ok: false as const,
@@ -641,6 +828,7 @@ function App() {
   async function refreshMetadata() {
     setError('')
     setMetadata([])
+    setBatchEdits({})
 
     if (!isTauriRuntime()) {
       setError('Metadata preview runs inside the Tauri desktop app.')
@@ -714,11 +902,36 @@ function App() {
       return
     }
 
-    const selectedItems = metadata.length > 0 ? selectedMetadata : []
-    const downloadUrls = selectedItems.length > 0 ? selectedItems.map((item) => item.url) : urls
-    const downloadTitles = selectedItems.map((item) => displayPartTitle(item))
+    const selectedOrganizedEntries = organizedBatch
+      .flatMap((series) => series.items)
+      .filter((entry) => selectedPreviewKeys.has(entry.key))
+    const selectedItems = metadata.length > 0
+      ? selectedOrganizedEntries.length > 0
+        ? selectedOrganizedEntries.map((entry) => entry.item)
+        : selectedMetadata
+      : []
+    const organizedItemByKey = new Map(
+      organizedBatch.flatMap((series) => series.items.map((entry) => [entry.key, entry])),
+    )
+    const directSourceEntries = selectedOrganizedEntries.length > 0
+      ? selectedOrganizedEntries
+      : selectedItems.map((item) => ({
+          item,
+          key: previewKey(item),
+          seriesTitle: item.uploader || 'TikTok Series',
+          episodeNumber: 1,
+          episodeTitle: displayPartTitle(item),
+          suggested: {},
+          outputTitle: displayPartTitle(item),
+        }))
+    const directItems = directSourceEntries
+      .filter((entry) => entry.item.directMediaUrl)
+      .map((entry) => directDownloadItemFromMetadata(entry.item, organizedItemByKey.get(entry.key) || entry))
+    const regularItems = selectedItems.filter((item) => !item.directMediaUrl)
+    const downloadUrls = selectedItems.length > 0 ? regularItems.map((item) => item.url) : urls
+    const downloadTitles = regularItems.map((item) => displayPartTitle(item))
 
-    if (downloadUrls.length === 0) {
+    if (downloadUrls.length === 0 && directItems.length === 0) {
       setError('Add at least one URL.')
       return
     }
@@ -738,24 +951,52 @@ function App() {
       return
     }
 
-    const groupedRequest = buildCookieRequestGroups(downloadUrls, downloadTitles)
+    const groupedRequest = downloadUrls.length > 0
+      ? buildCookieRequestGroups(downloadUrls, downloadTitles)
+      : { ok: true as const, groups: [] }
     if (!groupedRequest.ok) {
       setError(groupedRequest.message)
       return
     }
 
-    const optimisticJobs = groupedRequest.groups.map((group, index) => ({
+    const directOptimisticJob = directItems.length > 0
+      ? {
+          id: `queued-${Date.now()}-direct`,
+          urls: directItems.map((item) => item.sourceUrl),
+          titles: directItems.map((item) => item.title || item.sourceUrl),
+          status: 'queued' as JobStatus,
+          logs: [`Queued ${directItems.length} direct TikTok item${directItems.length === 1 ? '' : 's'} from Chrome.`],
+        }
+      : undefined
+    const regularOptimisticJobs = groupedRequest.groups.map((group, index) => ({
       id: `queued-${Date.now()}-${index}`,
       urls: group.urls,
       titles: group.titles,
       status: 'queued' as JobStatus,
       logs: [`Queued ${group.urls.length} item${group.urls.length === 1 ? '' : 's'} from the shared list.`],
     }))
+    const optimisticJobs = directOptimisticJob
+      ? [directOptimisticJob, ...regularOptimisticJobs]
+      : regularOptimisticJobs
     setStartingDownload(true)
     setJobs((currentJobs) => [...optimisticJobs, ...currentJobs])
 
     try {
-      const results = await Promise.allSettled(
+      const directResult = directItems.length > 0
+        ? await Promise.allSettled([
+            withTimeout(
+              invoke<string>('start_direct_download', {
+                request: {
+                  items: directItems,
+                  downloadDir,
+                },
+              }),
+              15_000,
+              'Direct TikTok download did not start within 15 seconds. Restart the app so the updated backend command is loaded.',
+            ),
+          ])
+        : []
+      const regularResults = await Promise.allSettled(
         groupedRequest.groups.map((group) =>
           invoke<string>('start_download', {
             request: {
@@ -777,6 +1018,7 @@ function App() {
           }),
         ),
       )
+      const results = [...directResult, ...regularResults]
       setJobs((currentJobs) =>
         currentJobs.map((job) => {
           const index = optimisticJobs.findIndex((queued) => queued.id === job.id)
@@ -880,6 +1122,12 @@ function App() {
     }
   }
 
+  function clearQueue() {
+    setJobs((currentJobs) =>
+      currentJobs.filter((job) => ['queued', 'starting', 'running', 'warning'].includes(job.status)),
+    )
+  }
+
   async function saveCover(item: MetadataPreview) {
     setError('')
 
@@ -960,6 +1208,122 @@ function App() {
 
   function clearPreviewSelection() {
     setSelectedPreviewKeys(new Set())
+  }
+
+  function selectSeries(series: OrganizedSeries) {
+    setSelectedPreviewKeys((current) => {
+      const next = new Set(current)
+      series.items.forEach((entry) => next.add(entry.key))
+      return next
+    })
+  }
+
+  function clearSeriesSelection(series: OrganizedSeries) {
+    setSelectedPreviewKeys((current) => {
+      const next = new Set(current)
+      series.items.forEach((entry) => next.delete(entry.key))
+      return next
+    })
+  }
+
+  function updateBatchItem(key: string, edit: BatchItemEdit) {
+    setBatchEdits((current) => ({
+      ...current,
+      [key]: {
+        ...current[key],
+        ...edit,
+      },
+    }))
+  }
+
+  function renameBatchSeries(series: OrganizedSeries, title: string) {
+    setBatchEdits((current) => {
+      const next = { ...current }
+      series.items.forEach((entry) => {
+        next[entry.key] = {
+          ...next[entry.key],
+          seriesTitle: title,
+        }
+      })
+      return next
+    })
+  }
+
+  async function organizeBatchWithAi() {
+    setError('')
+    if (!metadata.length) {
+      setError('Scan or preview videos before organizing with AI.')
+      return
+    }
+    if (!geminiApiKey.trim()) {
+      setError('Add a Google AI Studio API key before organizing with AI.')
+      return
+    }
+    if (!isTauriRuntime()) {
+      setError('AI organizer runs inside the Tauri desktop app.')
+      return
+    }
+
+    setOrganizingBatch(true)
+    try {
+      const items: AiBatchInputItem[] = metadata.map((item, index) => {
+        const key = previewKey(item)
+        const edit = batchEdits[key]
+        const suggested = suggestBatchItem(item, index)
+        return {
+          key,
+          url: item.webpageUrl || item.url,
+          title: item.title || displayPartTitle(item),
+          uploader: item.uploader,
+          scanIndex: index + 1,
+          episodeNumber: edit?.episodeNumber || suggested.episodeNumber,
+          isPinned: Boolean(item.isPinned),
+        }
+      })
+      const result = await invoke<AiBatchResult>('organize_batch_with_ai', {
+        request: {
+          apiKey: geminiApiKey.trim(),
+          model: geminiModel.trim() || 'gemini-3.1-flash-lite',
+          items,
+        },
+      })
+      applyAiBatchResult(result)
+      setBatchOrder('asScanned')
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setOrganizingBatch(false)
+    }
+  }
+
+  function applyAiBatchResult(result: AiBatchResult) {
+    const itemByKey = new Map(metadata.map((item) => [previewKey(item), item]))
+    const nextEdits: Record<string, BatchItemEdit> = {}
+    const nextMetadata: MetadataPreview[] = []
+
+    result.series.forEach((series) => {
+      series.episodes.forEach((episode) => {
+        const item = itemByKey.get(episode.key)
+        if (!item) return
+        nextMetadata.push(item)
+        nextEdits[episode.key] = {
+          seriesTitle: series.seriesTitle,
+          episodeNumber: episode.episodeNumber,
+          episodeTitle: episode.episodeTitle || '',
+        }
+      })
+    })
+
+    setMetadata(nextMetadata)
+    setBatchEdits(nextEdits)
+    setSelectedPreviewKeys((current) => {
+      const next = new Set<string>()
+      nextMetadata.forEach((item) => {
+        const key = previewKey(item)
+        if (current.has(key)) next.add(key)
+      })
+      return next
+    })
   }
 
   return (
@@ -1061,11 +1425,11 @@ function App() {
             <span>{metadata.length > 0 ? `${metadata.length} preview ready` : 'Run preview before downloading protected links.'}</span>
           </div>
 
-          {hasBilibiliChannelUrl && (
+          {(hasBilibiliChannelUrl || hasTikTokChannelUrl) && (
             <div className="notice notice-soft">
               <ShieldAlert />
               <span>
-                BiliBili channel pages are previewed in limited mode to avoid endless loading. You can still download the channel, but preview only loads the first batch of items.
+                Channel/profile pages are previewed in limited mode to avoid endless loading. You can still download the full channel, but preview only loads the first batch of items.
               </span>
             </div>
           )}
@@ -1088,6 +1452,22 @@ function App() {
                   </button>
                 </div>
               </div>
+              <BatchOrganizer
+                batchOrder={batchOrder}
+                geminiApiKey={geminiApiKey}
+                geminiModel={geminiModel}
+                isOrganizing={organizingBatch}
+                series={organizedBatch}
+                selectedKeys={selectedPreviewKeys}
+                onClearSeries={clearSeriesSelection}
+                onGeminiApiKeyChange={setGeminiApiKey}
+                onGeminiModelChange={setGeminiModel}
+                onOrganizeWithAi={organizeBatchWithAi}
+                onRenameSeries={renameBatchSeries}
+                onSelectSeries={selectSeries}
+                onSetBatchOrder={setBatchOrder}
+                onUpdateItem={updateBatchItem}
+              />
               {metadata.map((item) => (
                 <MetadataCard
                   key={item.url}
@@ -1284,8 +1664,19 @@ function App() {
 
       <aside className="jobs-pane">
         <div className="pane-heading">
-          <Terminal />
-          <h2>Queue</h2>
+          <div>
+            <Terminal />
+            <h2>Queue</h2>
+          </div>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={clearQueue}
+            disabled={jobs.length === 0 || jobs.every((job) => ['queued', 'starting', 'running', 'warning'].includes(job.status))}
+          >
+            <Trash2 />
+            <span>Clear queue</span>
+          </button>
         </div>
 
         {jobs.length === 0 ? (
@@ -1425,6 +1816,192 @@ function CookieProfileCard({
         </div>
       )}
     </article>
+  )
+}
+
+function BatchOrganizer({
+  batchOrder,
+  geminiApiKey,
+  geminiModel,
+  isOrganizing,
+  series,
+  selectedKeys,
+  onClearSeries,
+  onGeminiApiKeyChange,
+  onGeminiModelChange,
+  onOrganizeWithAi,
+  onRenameSeries,
+  onSelectSeries,
+  onSetBatchOrder,
+  onUpdateItem,
+}: {
+  batchOrder: BatchOrderMode
+  geminiApiKey: string
+  geminiModel: string
+  isOrganizing: boolean
+  series: OrganizedSeries[]
+  selectedKeys: Set<string>
+  onClearSeries: (series: OrganizedSeries) => void
+  onGeminiApiKeyChange: (value: string) => void
+  onGeminiModelChange: (value: string) => void
+  onOrganizeWithAi: () => void
+  onRenameSeries: (series: OrganizedSeries, title: string) => void
+  onSelectSeries: (series: OrganizedSeries) => void
+  onSetBatchOrder: (mode: BatchOrderMode) => void
+  onUpdateItem: (key: string, edit: BatchItemEdit) => void
+}) {
+  const [copiedPrompt, setCopiedPrompt] = useState(false)
+
+  if (series.length === 0) return null
+
+  const totalItems = series.reduce((sum, group) => sum + group.items.length, 0)
+
+  async function copyAiPrompt() {
+    const prompt = buildBatchAiPrompt(series)
+    await navigator.clipboard.writeText(prompt)
+    setCopiedPrompt(true)
+    window.setTimeout(() => setCopiedPrompt(false), 1800)
+  }
+
+  return (
+    <section className="batch-organizer" aria-label="Batch organizer">
+      <div className="batch-organizer-heading">
+        <div>
+          <strong>Batch organizer</strong>
+          <span>
+            {series.length} series group{series.length === 1 ? '' : 's'} from {totalItems} preview item{totalItems === 1 ? '' : 's'}
+          </span>
+        </div>
+        <div className="batch-heading-actions">
+          <small>Folder + episode names are used for direct TikTok downloads.</small>
+          <select
+            className="select-input"
+            value={batchOrder}
+            onChange={(event) => onSetBatchOrder(event.target.value as BatchOrderMode)}
+          >
+            <option value="asScanned">As scanned</option>
+            <option value="reverse">Reverse order</option>
+            <option value="episodeNumber">Sort by episode</option>
+          </select>
+          <button className="secondary-button" type="button" onClick={copyAiPrompt}>
+            <FileText />
+            <span>{copiedPrompt ? 'Copied' : 'Copy AI prompt'}</span>
+          </button>
+        </div>
+      </div>
+
+      <div className="ai-organizer-panel">
+        <label>
+          <span>Google AI Studio API key</span>
+          <input
+            className="text-input"
+            type="password"
+            value={geminiApiKey}
+            onChange={(event) => onGeminiApiKeyChange(event.target.value)}
+            placeholder="Paste API key"
+          />
+        </label>
+        <label>
+          <span>Model</span>
+          <input
+            className="text-input"
+            value={geminiModel}
+            onChange={(event) => onGeminiModelChange(event.target.value)}
+            placeholder="gemini-3.1-flash-lite"
+          />
+        </label>
+        <button
+          className="primary-button"
+          type="button"
+          onClick={onOrganizeWithAi}
+          disabled={isOrganizing || !geminiApiKey.trim()}
+        >
+          {isOrganizing ? <Loader2 className="spin" /> : <RefreshCw />}
+          <span>{isOrganizing ? 'Organizing...' : 'Organize with AI'}</span>
+        </button>
+      </div>
+
+      <div className="batch-series-list">
+        {series.map((group, groupIndex) => {
+          const selectedCount = group.items.filter((entry) => selectedKeys.has(entry.key)).length
+          return (
+            <article className="batch-series" key={group.id}>
+              <div className="batch-series-top">
+                <div className="field-block compact">
+                  <label>Series {groupIndex + 1}</label>
+                  <input
+                    className="text-input"
+                    value={group.title}
+                    onChange={(event) => onRenameSeries(group, event.target.value)}
+                  />
+                </div>
+                <div className="batch-series-actions">
+                  <span>
+                    {selectedCount}/{group.items.length} selected
+                  </span>
+                  <button className="secondary-button" type="button" onClick={() => onSelectSeries(group)}>
+                    <CheckCircle2 />
+                    <span>Select</span>
+                  </button>
+                  <button className="secondary-button" type="button" onClick={() => onClearSeries(group)}>
+                    <X />
+                    <span>Clear</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="episode-table">
+                {group.items.slice(0, 8).map((entry, index) => {
+                  const previous = group.items[index - 1]
+                  const outOfOrder = Boolean(previous && entry.episodeNumber <= previous.episodeNumber)
+                  return (
+                  <div
+                    className={`episode-row${entry.item.isPinned ? ' pinned' : ''}${outOfOrder ? ' out-of-order' : ''}`}
+                    key={entry.key}
+                  >
+                    <Thumbnail src={entry.item.thumbnail} />
+                    <label>
+                      <span>EP</span>
+                      <input
+                        className="number-input"
+                        type="number"
+                        min={1}
+                        value={entry.episodeNumber}
+                        onChange={(event) =>
+                          onUpdateItem(entry.key, {
+                            episodeNumber: Math.max(1, Number(event.target.value) || entry.episodeNumber),
+                          })
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Title</span>
+                      <input
+                        className="text-input"
+                        value={entry.episodeTitle}
+                        onChange={(event) =>
+                          onUpdateItem(entry.key, { episodeTitle: event.target.value })
+                        }
+                      />
+                    </label>
+                    <small>
+                      {entry.item.isPinned ? 'Pinned - ' : ''}
+                      {outOfOrder ? 'Check order - ' : ''}
+                      {entry.outputTitle}
+                    </small>
+                  </div>
+                )})}
+                {group.items.length > 8 && (
+                  <div className="episode-more">
+                    + {group.items.length - 8} more episode{group.items.length - 8 === 1 ? '' : 's'} in this series
+                  </div>
+                )}
+              </div>
+            </article>
+          )
+        })}
+      </div>
+    </section>
   )
 }
 
@@ -1578,6 +2155,7 @@ function JobItem({
 
   const label = job.titles?.[0] || job.urls[0]
   const extraCount = Math.max((job.titles?.length || job.urls.length) - 1, 0)
+  const visibleLogs = job.logs.filter(Boolean)
 
   return (
     <article className={`job-item ${job.status}`}>
@@ -1607,9 +2185,9 @@ function JobItem({
       <div className="job-log-panel">
         <div className="job-log-header">
           <span>Activity log</span>
-          <small>{job.logs.length} lines</small>
+          <small>{visibleLogs.length} lines</small>
         </div>
-        <pre>{job.logs.slice(-8).join('\n')}</pre>
+        <pre>{visibleLogs.slice(-6).join('\n') || statusLabel(job.status)}</pre>
       </div>
 
       {job.mediaReport && (
@@ -1697,6 +2275,44 @@ function formatCodecs(codecs: string[]) {
   return codecs.length > 0 ? codecs.slice(0, 4).join(', ') : 'unknown'
 }
 
+function appendJobLog(logs: string[], rawLine: string) {
+  const line = cleanJobLogLine(rawLine)
+  if (!line) return logs
+  if (logs[logs.length - 1] === line) return logs
+  return [...logs.slice(-80), line]
+}
+
+function cleanJobLogLine(line: string) {
+  const value = line.trim()
+  if (!value) return ''
+  if (value.startsWith('yt-dlp ') || value.includes('--progress-template')) {
+    return ''
+  }
+  if (value.startsWith('[debug]')) {
+    return ''
+  }
+  if (value.startsWith('[download] Destination:')) {
+    return `Saving: ${value.replace('[download] Destination:', '').trim()}`
+  }
+  if (value.startsWith('[download] Downloading item')) {
+    return value.replace('[download] ', '')
+  }
+  if (value.startsWith('[direct] ')) {
+    return value.replace('[direct] ', '')
+  }
+  return value
+}
+
+function statusLabel(status: JobStatus) {
+  if (status === 'completed') return 'Download completed.'
+  if (status === 'failed') return 'Download failed.'
+  if (status === 'queued') return 'Waiting to start.'
+  if (status === 'starting') return 'Starting download...'
+  if (status === 'running') return 'Downloading...'
+  if (status === 'canceled') return 'Download canceled.'
+  return 'Working...'
+}
+
 type JobActivitySummary = {
   totalItems?: number
   currentItem?: number
@@ -1778,6 +2394,253 @@ function mergeUrlText(current: string, incoming: string[]) {
   return merged.join('\n')
 }
 
+function metadataFromResolvedMedia(item: ResolvedMediaItem): MetadataPreview {
+  const warning = [
+    'Resolved from your Chrome TikTok session. Download soon because signed media URLs can expire.',
+    item.isPinned ? 'This item appears pinned on the profile and may be out of chronological order.' : '',
+  ].filter(Boolean).join(' ')
+
+  return {
+    url: item.sourceUrl,
+    sourceUrl: item.sourceUrl,
+    title: item.title || item.sourceUrl,
+    thumbnail: item.thumbnail,
+    duration: item.duration,
+    uploader: item.uploader,
+    platform: 'TikTok',
+    webpageUrl: item.pageUrl,
+    formatCount: 1,
+    bestWidth: item.width,
+    bestHeight: item.height,
+    recommendedPreset: item.videoCodec === 'h264' ? 'Direct MP4' : 'Direct media',
+    videoCodecs: item.videoCodec ? [item.videoCodec] : [],
+    audioCodecs: item.audioCodec ? [item.audioCodec] : ['aac'],
+    requiresSession: false,
+    warning,
+    directMediaUrl: item.mediaUrl,
+    subtitleUrl: item.subtitles?.[0]?.url,
+    isPinned: item.isPinned,
+  }
+}
+
+function mergeMetadataPreviews(current: MetadataPreview[], incoming: MetadataPreview[]) {
+  if (incoming.length === 0) return current
+
+  const merged = [...current]
+  const indexes = new Map(current.map((item, index) => [previewKey(item), index]))
+
+  for (const item of incoming) {
+    const key = previewKey(item)
+    const existingIndex = indexes.get(key)
+    if (existingIndex === undefined) {
+      indexes.set(key, merged.length)
+      merged.push(item)
+    } else {
+      merged[existingIndex] = item
+    }
+  }
+
+  return merged
+}
+
+function directDownloadItemFromMetadata(
+  item: MetadataPreview,
+  organized?: OrganizedBatchItem,
+): DirectDownloadItem {
+  return {
+    sourceUrl: item.sourceUrl,
+    pageUrl: item.webpageUrl || item.url,
+    mediaUrl: item.directMediaUrl || '',
+    title: organized?.outputTitle || displayPartTitle(item),
+    uploader: item.uploader,
+    duration: item.duration,
+    thumbnail: item.thumbnail,
+    videoCodec: item.videoCodecs[0],
+    audioCodec: item.audioCodecs[0],
+    width: item.bestWidth,
+    height: item.bestHeight,
+    subtitles: item.subtitleUrl ? [{ url: item.subtitleUrl }] : [],
+    outputFolder: organized?.seriesTitle,
+    outputFilename: organized?.outputTitle,
+  }
+}
+
+function organizeMetadataBatch(
+  metadata: MetadataPreview[],
+  edits: Record<string, BatchItemEdit>,
+  order: BatchOrderMode,
+): OrganizedSeries[] {
+  const groups: OrganizedSeries[] = []
+  const orderedMetadata = orderMetadataForBatch(metadata, edits, order)
+  let currentFallbackGroup = 0
+  let previousEpisode = 0
+  let previousSeriesTitle = ''
+
+  orderedMetadata.forEach((item, index) => {
+    const key = previewKey(item)
+    const edit = edits[key] || {}
+    const suggested = suggestBatchItem(item, index)
+    const editedSeriesTitle = edit.seriesTitle?.trim()
+    const hasExplicitSeries =
+      Boolean(editedSeriesTitle) ||
+      Boolean(item.playlistTitle?.trim()) ||
+      Boolean(suggested.seriesTitle && !isEpisodeOnlyTitle(item.title || ''))
+    const episodeNumber = edit.episodeNumber || suggested.episodeNumber || index + 1
+    let seriesTitle = editedSeriesTitle || suggested.seriesTitle || item.uploader || 'TikTok Series'
+
+    if (!hasExplicitSeries) {
+      if (episodeNumber <= previousEpisode && previousEpisode > 1) {
+        currentFallbackGroup += 1
+      }
+      seriesTitle = `${item.uploader || 'TikTok Series'} ${currentFallbackGroup + 1}`
+    } else if (seriesTitle !== previousSeriesTitle) {
+      previousSeriesTitle = seriesTitle
+    }
+
+    const episodeTitle = edit.episodeTitle ?? suggested.episodeTitle ?? `Episode ${padEpisodeNumber(episodeNumber)}`
+    const outputTitle = buildEpisodeOutputTitle(seriesTitle, episodeNumber, episodeTitle)
+    const entry: OrganizedBatchItem = {
+      item,
+      key,
+      seriesTitle,
+      episodeNumber,
+      episodeTitle,
+      suggested,
+      outputTitle,
+    }
+    const groupId = normalizeGroupingKey(seriesTitle)
+    const group = groups.find((existing) => existing.id === groupId)
+    if (group) {
+      group.items.push(entry)
+    } else {
+      groups.push({
+        id: groupId,
+        title: seriesTitle,
+        items: [entry],
+      })
+    }
+
+    previousEpisode = episodeNumber
+    previousSeriesTitle = seriesTitle
+  })
+
+  return groups
+}
+
+function orderMetadataForBatch(
+  metadata: MetadataPreview[],
+  edits: Record<string, BatchItemEdit>,
+  order: BatchOrderMode,
+) {
+  if (order === 'asScanned') return metadata
+  if (order === 'reverse') return [...metadata].reverse()
+
+  return [...metadata].sort((left, right) => {
+    const leftKey = previewKey(left)
+    const rightKey = previewKey(right)
+    const leftEpisode =
+      edits[leftKey]?.episodeNumber || suggestBatchItem(left, metadata.indexOf(left)).episodeNumber || Number.MAX_SAFE_INTEGER
+    const rightEpisode =
+      edits[rightKey]?.episodeNumber || suggestBatchItem(right, metadata.indexOf(right)).episodeNumber || Number.MAX_SAFE_INTEGER
+    if (leftEpisode !== rightEpisode) return leftEpisode - rightEpisode
+    return metadata.indexOf(left) - metadata.indexOf(right)
+  })
+}
+
+function suggestBatchItem(item: MetadataPreview, index: number): BatchItemEdit {
+  const rawTitle = item.title?.trim() || displayPartTitle(item)
+  const episodeNumber = inferEpisodeNumber(rawTitle) || item.playlistIndex || index + 1
+  const stripped = stripEpisodeMarker(rawTitle).trim()
+  const seriesTitle = item.playlistTitle?.trim() || inferSeriesTitle(rawTitle, item.uploader)
+  const episodeTitle = stripped && stripped !== seriesTitle ? stripped : `Episode ${padEpisodeNumber(episodeNumber)}`
+
+  return {
+    seriesTitle,
+    episodeNumber,
+    episodeTitle,
+  }
+}
+
+function inferEpisodeNumber(title: string) {
+  const patterns = [
+    /\b(?:ep|eps|episode|episodio|episódio|tap|tập|part|p)[\s._:-]*(\d{1,4})\b/i,
+    /[#№]\s*(\d{1,4})\b/i,
+    /\b(\d{1,4})\s*\/\s*\d{1,4}\b/i,
+  ]
+
+  for (const pattern of patterns) {
+    const match = title.match(pattern)
+    if (match) return Number(match[1])
+  }
+
+  const numericOnly = title.match(/^\D*(\d{1,4})\D*$/)
+  return numericOnly ? Number(numericOnly[1]) : undefined
+}
+
+function inferSeriesTitle(title: string, uploader?: string) {
+  const stripped = stripEpisodeMarker(title).trim()
+  if (stripped && !isEpisodeOnlyTitle(stripped)) {
+    return stripped
+  }
+  return uploader || 'TikTok Series'
+}
+
+function stripEpisodeMarker(title: string) {
+  return title
+    .replace(/\b(?:ep|eps|episode|episodio|episódio|tap|tập|part|p)[\s._:-]*\d{1,4}\b/gi, '')
+    .replace(/[#№]\s*\d{1,4}\b/gi, '')
+    .replace(/\b\d{1,4}\s*\/\s*\d{1,4}\b/gi, '')
+    .replace(/\s*[-_|:]\s*$/g, '')
+    .replace(/^\s*[-_|:]\s*/g, '')
+    .replace(/\s{2,}/g, ' ')
+}
+
+function isEpisodeOnlyTitle(title: string) {
+  return /^(?:ep|eps|episode|episodio|episódio|tap|tập|part|p)?[\s._:-]*\d{1,4}$/i.test(title.trim())
+}
+
+function buildEpisodeOutputTitle(seriesTitle: string, episodeNumber: number, episodeTitle: string) {
+  const episodeLabel = `EP${padEpisodeNumber(episodeNumber)}`
+  const cleanEpisodeTitle = episodeTitle.trim()
+  if (!cleanEpisodeTitle || cleanEpisodeTitle === episodeLabel) {
+    return `${seriesTitle} - ${episodeLabel}`
+  }
+  return `${seriesTitle} - ${episodeLabel} - ${cleanEpisodeTitle}`
+}
+
+function padEpisodeNumber(value: number) {
+  return String(Math.max(1, value)).padStart(3, '0')
+}
+
+function normalizeGroupingKey(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ') || 'unsorted'
+}
+
+function buildBatchAiPrompt(series: OrganizedSeries[]) {
+  const rows = series.flatMap((group, groupIndex) =>
+    group.items.map((entry, itemIndex) =>
+      [
+        `scanOrder=${groupIndex + 1}.${itemIndex + 1}`,
+        `currentSeries="${group.title}"`,
+        `episode=${entry.episodeNumber}`,
+        `title="${entry.item.title || ''}"`,
+        `suggestedOutput="${entry.outputTitle}"`,
+        `url="${entry.item.webpageUrl || entry.item.url}"`,
+      ].join(' | '),
+    ),
+  )
+
+  return [
+    'Bạn là trợ lý tổ chức batch video Short Drama.',
+    'Hãy chia các item dưới đây thành từng bộ phim/series và đánh số tập theo đúng thứ tự hiển thị.',
+    'Nếu title chỉ là EP/tập/số, hãy dựa vào scanOrder và điểm số tập reset để tách bộ.',
+    'Trả về JSON duy nhất theo schema:',
+    '[{"seriesTitle":"Tên bộ","episodes":[{"url":"...","episodeNumber":1,"episodeTitle":"Tên tập hoặc để rỗng"}]}]',
+    '',
+    rows.join('\n'),
+  ].join('\n')
+}
+
 function normalizeUrlCandidate(value: string) {
   const trimmed = value
     .trim()
@@ -1801,6 +2664,15 @@ function normalizeUrlCandidate(value: string) {
   }
 
   return trimmed
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), ms)
+    promise
+      .then(resolve, reject)
+      .finally(() => window.clearTimeout(timer))
+  })
 }
 
 function looksLikeBareUrl(value: string) {

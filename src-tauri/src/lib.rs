@@ -1,3 +1,4 @@
+use interprocess::local_socket::{prelude::*, GenericNamespaced, ListenerOptions};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -7,10 +8,7 @@ use std::{
     process::Stdio,
     sync::{Arc, Mutex as StdMutex},
     thread,
-    time::Duration as StdDuration,
-};
-use interprocess::local_socket::{
-    prelude::*, GenericNamespaced, ListenerOptions,
+    time::{Duration as StdDuration, SystemTime},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
@@ -25,6 +23,7 @@ use uuid::Uuid;
 struct DownloadState {
     jobs: Arc<Mutex<HashMap<String, Arc<Mutex<Child>>>>>,
     pids: Arc<Mutex<HashMap<String, u32>>>,
+    direct_jobs: Arc<Mutex<HashSet<String>>>,
     canceled: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -32,10 +31,12 @@ const NATIVE_HOST_NAME: &str = "com.sorevid.downloader";
 const EXTENSION_ID: &str = "iplhkneijdhbagijdoldmdmmjbfdkifc";
 const EXTENSION_ORIGIN: &str = "chrome-extension://iplhkneijdhbagijdoldmdmmjbfdkifc/";
 const IPC_NAME: &str = "sorevid-downloader-native-v1";
+const TIKTOK_MOBILE_USER_AGENT: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 
 #[derive(Clone, Default)]
 struct ExtensionState {
     pending_urls: Arc<StdMutex<Vec<String>>>,
+    pending_resolved_media: Arc<StdMutex<Vec<ResolvedMediaItem>>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -46,6 +47,8 @@ struct NativeRequest {
     action: String,
     #[serde(default)]
     urls: Vec<String>,
+    #[serde(default)]
+    items: Vec<ResolvedMediaItem>,
     source: Option<NativeSource>,
 }
 
@@ -68,6 +71,38 @@ struct NativeResponse {
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     accepted_urls: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResolvedSubtitle {
+    format: Option<String>,
+    language: Option<String>,
+    url: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResolvedMediaItem {
+    source_url: String,
+    page_url: String,
+    media_url: String,
+    title: Option<String>,
+    uploader: Option<String>,
+    duration: Option<f64>,
+    thumbnail: Option<String>,
+    video_codec: Option<String>,
+    audio_codec: Option<String>,
+    width: Option<u64>,
+    height: Option<u64>,
+    #[serde(default)]
+    subtitles: Vec<ResolvedSubtitle>,
+    #[serde(default)]
+    output_folder: Option<String>,
+    #[serde(default)]
+    output_filename: Option<String>,
+    #[serde(default)]
+    is_pinned: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -110,6 +145,13 @@ struct DownloadRequest {
     danmaku_format: DanmakuFormat,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DirectDownloadRequest {
+    items: Vec<ResolvedMediaItem>,
+    download_dir: String,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AppSettings {
@@ -127,6 +169,52 @@ struct AppSettings {
     danmaku_format: String,
     #[serde(default)]
     cookie_profiles: HashMap<String, CookieProfileSettings>,
+    #[serde(default)]
+    gemini_api_key: String,
+    #[serde(default = "default_gemini_model")]
+    gemini_model: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiBatchRequest {
+    api_key: String,
+    model: String,
+    items: Vec<AiBatchInputItem>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AiBatchInputItem {
+    key: String,
+    url: String,
+    title: String,
+    uploader: Option<String>,
+    scan_index: usize,
+    episode_number: Option<u64>,
+    is_pinned: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AiBatchResult {
+    series: Vec<AiBatchSeries>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AiBatchSeries {
+    series_title: String,
+    episodes: Vec<AiBatchEpisode>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AiBatchEpisode {
+    key: String,
+    url: String,
+    episode_number: u64,
+    episode_title: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -231,6 +319,13 @@ struct CookieFileStatus {
     message: String,
 }
 
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExtensionImportPayload {
+    urls: Vec<String>,
+    resolved_media: Vec<ResolvedMediaItem>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MetadataPreview {
@@ -253,6 +348,16 @@ struct MetadataPreview {
     audio_codecs: Vec<String>,
     requires_session: bool,
     warning: Option<String>,
+    direct_media_url: Option<String>,
+    subtitle_url: Option<String>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct TikTokProfileHint {
+    sec_uid: Option<String>,
+    video_count: Option<u64>,
+    short_drama_profile: bool,
+    possible_collection_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -371,9 +476,7 @@ pub fn run_native_messaging() -> Result<(), String> {
 
         let request = serde_json::from_slice::<NativeRequest>(&payload);
         let response = match request {
-            Ok(request) if origin == EXTENSION_ORIGIN => {
-                handle_native_host_request(request)
-            }
+            Ok(request) if origin == EXTENSION_ORIGIN => handle_native_host_request(request),
             Ok(request) => response_error(
                 request.id,
                 "origin_denied",
@@ -457,16 +560,22 @@ fn validate_native_request(request: &NativeRequest) -> Result<(), String> {
     if request.version != 1 || request.id.trim().is_empty() {
         return Err("Unsupported protocol version or missing request ID.".to_string());
     }
-    if !matches!(request.action.as_str(), "ping" | "import_urls") {
+    if !matches!(
+        request.action.as_str(),
+        "ping" | "import_urls" | "import_resolved_media"
+    ) {
         return Err("Unsupported native action.".to_string());
     }
     if request.action == "import_urls" && request.urls.is_empty() {
         return Err("At least one URL is required.".to_string());
     }
+    if request.action == "import_resolved_media" && request.items.is_empty() {
+        return Err("At least one resolved media item is required.".to_string());
+    }
     if let Some(source) = &request.source {
         if !matches!(
             source.trigger.as_str(),
-            "popup" | "context-menu" | "player-button" | "desktop-test"
+            "popup" | "context-menu" | "player-button" | "desktop-test" | "profile-scan"
         ) {
             return Err("Unsupported request trigger.".to_string());
         }
@@ -494,8 +603,7 @@ fn send_ipc_request(request: &NativeRequest) -> Result<NativeResponse, String> {
     StdBufReader::new(stream)
         .read_line(&mut response)
         .map_err(|error| format!("Failed to read IPC response: {error}"))?;
-    serde_json::from_str(response.trim())
-        .map_err(|error| format!("Invalid IPC response: {error}"))
+    serde_json::from_str(response.trim()).map_err(|error| format!("Invalid IPC response: {error}"))
 }
 
 fn start_gui_app() -> Result<(), String> {
@@ -582,6 +690,83 @@ fn process_gui_request(
         return response_ok(request.id, "Sorevid is connected.", None);
     }
 
+    if request.action == "import_resolved_media" {
+        let mut accepted_items = Vec::new();
+
+        for item in &request.items {
+            let Some(source_url) = normalize_url_candidate(&item.source_url) else {
+                continue;
+            };
+            let Some(page_url) = normalize_url_candidate(&item.page_url) else {
+                continue;
+            };
+            let media_url = item.media_url.trim();
+            if !is_http_url(&source_url) || !is_http_url(&page_url) || !is_http_url(media_url) {
+                continue;
+            }
+
+            accepted_items.push(ResolvedMediaItem {
+                source_url,
+                page_url,
+                media_url: media_url.to_string(),
+                title: item.title.clone(),
+                uploader: item.uploader.clone(),
+                duration: item.duration,
+                thumbnail: item
+                    .thumbnail
+                    .as_ref()
+                    .and_then(|url| normalize_thumbnail_url(url)),
+                video_codec: item.video_codec.clone(),
+                audio_codec: item.audio_codec.clone(),
+                width: item.width,
+                height: item.height,
+                subtitles: item
+                    .subtitles
+                    .iter()
+                    .filter(|entry| is_http_url(&entry.url))
+                    .cloned()
+                    .collect(),
+                output_folder: item.output_folder.clone(),
+                output_filename: item.output_filename.clone(),
+                is_pinned: item.is_pinned,
+            });
+        }
+
+        if accepted_items.is_empty() {
+            return response_error(
+                request.id,
+                "unsupported_url",
+                "No resolved TikTok media items were usable.",
+            );
+        }
+
+        if let Ok(mut pending_media) = extension_state.pending_resolved_media.lock() {
+            pending_media.extend(accepted_items.clone());
+        }
+        let _ = app.emit(
+            "extension-import",
+            ExtensionImportPayload {
+                urls: Vec::new(),
+                resolved_media: accepted_items.clone(),
+            },
+        );
+
+        return response_ok(
+            request.id,
+            &format!(
+                "Imported {} resolved TikTok item{} from Chrome.",
+                accepted_items.len(),
+                if accepted_items.len() == 1 { "" } else { "s" }
+            ),
+            Some(
+                accepted_items
+                    .iter()
+                    .map(|item| item.source_url.clone())
+                    .collect(),
+            ),
+        );
+    }
+
     let mut accepted_urls = Vec::new();
     let mut seen = HashSet::new();
     for url in &request.urls {
@@ -607,13 +792,15 @@ fn process_gui_request(
             }
         }
     }
-    let _ = app.emit("extension-import", accepted_urls.clone());
+    let _ = app.emit(
+        "extension-import",
+        ExtensionImportPayload {
+            urls: accepted_urls.clone(),
+            resolved_media: Vec::new(),
+        },
+    );
 
-    response_ok(
-        request.id,
-        "URL sent to Sorevid.",
-        Some(accepted_urls),
-    )
+    response_ok(request.id, "URL sent to Sorevid.", Some(accepted_urls))
 }
 
 fn focus_main_window(app: &AppHandle) {
@@ -689,12 +876,99 @@ fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn drain_extension_imports(state: State<'_, ExtensionState>) -> Vec<String> {
-    state
+fn drain_extension_imports(state: State<'_, ExtensionState>) -> ExtensionImportPayload {
+    let urls = state
         .pending_urls
         .lock()
-        .map(|mut urls| std::mem::take(&mut *urls))
-        .unwrap_or_default()
+        .map(|mut values| std::mem::take(&mut *values))
+        .unwrap_or_default();
+    let resolved_media = state
+        .pending_resolved_media
+        .lock()
+        .map(|mut values| std::mem::take(&mut *values))
+        .unwrap_or_default();
+
+    ExtensionImportPayload {
+        urls,
+        resolved_media,
+    }
+}
+
+#[tauri::command]
+async fn organize_batch_with_ai(request: AiBatchRequest) -> Result<AiBatchResult, String> {
+    let api_key = request.api_key.trim();
+    if api_key.is_empty() {
+        return Err("Add a Google AI Studio API key before organizing with AI.".to_string());
+    }
+    if request.items.is_empty() {
+        return Err("Scan or preview at least one video before organizing with AI.".to_string());
+    }
+    if request.items.len() > 300 {
+        return Err("AI organizer accepts up to 300 items at a time.".to_string());
+    }
+
+    let model = if request.model.trim().is_empty() {
+        default_gemini_model()
+    } else {
+        request.model.trim().to_string()
+    };
+    let prompt = build_ai_batch_prompt(&request.items)?;
+    let endpoint = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+        encode_model_path(&model)
+    );
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|error| format!("Failed to prepare Gemini request: {error}"))?;
+    let body = serde_json::json!({
+        "contents": [{
+            "role": "user",
+            "parts": [{ "text": prompt }]
+        }],
+        "generationConfig": {
+            "temperature": 0.1,
+            "responseMimeType": "application/json"
+        }
+    });
+    let body_bytes = serde_json::to_vec(&body)
+        .map_err(|error| format!("Failed to serialize Gemini request: {error}"))?;
+
+    let response = client
+        .post(endpoint)
+        .header("Content-Type", "application/json")
+        .header("X-goog-api-key", api_key)
+        .body(body_bytes)
+        .send()
+        .await
+        .map_err(|error| format!("Gemini request failed: {error}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|error| format!("Failed to read Gemini response: {error}"))?;
+    if !status.is_success() {
+        return Err(format!("Gemini returned HTTP {status}: {}", compact_error_text(&text)));
+    }
+
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| format!("Failed to parse Gemini response JSON: {error}"))?;
+    let content = value
+        .get("candidates")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|candidate| candidate.get("content"))
+        .and_then(|content| content.get("parts"))
+        .and_then(serde_json::Value::as_array)
+        .and_then(|parts| parts.first())
+        .and_then(|part| part.get("text"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "Gemini did not return text output.".to_string())?;
+    let json_text = extract_json_payload(content);
+    let result: AiBatchResult = serde_json::from_str(&json_text)
+        .map_err(|error| format!("Gemini returned invalid organizer JSON: {error}"))?;
+
+    validate_ai_batch_result(result, &request.items)
 }
 
 #[tauri::command]
@@ -731,9 +1005,7 @@ fn install_chrome_integration(app: AppHandle) -> Result<ChromeIntegrationStatus,
         .map_err(|error| format!("Failed to write native host manifest: {error}"))?;
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let key_path = format!(
-            r"Software\Google\Chrome\NativeMessagingHosts\{NATIVE_HOST_NAME}"
-        );
+        let key_path = format!(r"Software\Google\Chrome\NativeMessagingHosts\{NATIVE_HOST_NAME}");
         let (key, _) = hkcu
             .create_subkey(&key_path)
             .map_err(|error| format!("Failed to register Chrome integration: {error}"))?;
@@ -754,9 +1026,7 @@ fn remove_chrome_integration(app: AppHandle) -> Result<ChromeIntegrationStatus, 
         use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let key_path = format!(
-            r"Software\Google\Chrome\NativeMessagingHosts\{NATIVE_HOST_NAME}"
-        );
+        let key_path = format!(r"Software\Google\Chrome\NativeMessagingHosts\{NATIVE_HOST_NAME}");
         match hkcu.delete_subkey_all(&key_path) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -791,6 +1061,7 @@ fn test_chrome_integration(app: AppHandle) -> Result<String, String> {
         id: Uuid::new_v4().to_string(),
         action: "ping".to_string(),
         urls: Vec::new(),
+        items: Vec::new(),
         source: Some(NativeSource {
             page_url: None,
             title: Some("Desktop integration test".to_string()),
@@ -800,7 +1071,10 @@ fn test_chrome_integration(app: AppHandle) -> Result<String, String> {
     };
     let response = send_ipc_request(&request)?;
     if response.ok {
-        Ok("Desktop bridge is ready. Load the extension separately in chrome://extensions.".to_string())
+        Ok(
+            "Desktop bridge is ready. Load the extension separately in chrome://extensions."
+                .to_string(),
+        )
     } else {
         Err(response.message)
     }
@@ -833,9 +1107,7 @@ fn chrome_integration_status(app: &AppHandle) -> ChromeIntegrationStatus {
             }
         };
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let key_path = format!(
-            r"Software\Google\Chrome\NativeMessagingHosts\{NATIVE_HOST_NAME}"
-        );
+        let key_path = format!(r"Software\Google\Chrome\NativeMessagingHosts\{NATIVE_HOST_NAME}");
         let registered_path = hkcu
             .open_subkey(&key_path)
             .and_then(|key| key.get_value::<String, _>(""));
@@ -867,9 +1139,9 @@ fn chrome_integration_status(app: &AppHandle) -> ChromeIntegrationStatus {
                                     .get("allowed_origins")
                                     .and_then(|value| value.as_array())
                                     .map(|origins| {
-                                        origins.iter().any(|origin| {
-                                            origin.as_str() == Some(EXTENSION_ORIGIN)
-                                        })
+                                        origins
+                                            .iter()
+                                            .any(|origin| origin.as_str() == Some(EXTENSION_ORIGIN))
                                     })
                                     .unwrap_or(false)
                         })
@@ -960,7 +1232,7 @@ async fn fetch_metadata(
             "--skip-download".to_string(),
             "--no-warnings".to_string(),
         ];
-        if is_bilibili_channel_url(url) {
+        if is_bilibili_channel_url(url) || is_tiktok_channel_url(url) {
             args.extend(["--playlist-end".to_string(), "24".to_string()]);
         }
         args.extend(build_cookie_args(
@@ -969,14 +1241,15 @@ async fn fetch_metadata(
         ));
         args.push(url.clone());
 
+        let is_channel_url = is_bilibili_channel_url(url) || is_tiktok_channel_url(url);
         let output = timeout(
-            Duration::from_secs(if is_bilibili_channel_url(url) { 45 } else { 45 }),
+            Duration::from_secs(if is_channel_url { 45 } else { 45 }),
             Command::new(&yt_dlp).args(&args).output(),
         )
         .await
         .map_err(|_| {
-            if is_bilibili_channel_url(url) {
-                "Channel preview timed out. BiliBili space pages are previewed in a limited mode to avoid endless loading. Try a direct video link or download the channel directly.".to_string()
+            if is_channel_url {
+                "Channel preview timed out. Channel/profile pages are previewed in limited mode to avoid endless loading. Try a direct video link or download the channel directly.".to_string()
             } else {
                 "Metadata preview timed out.".to_string()
             }
@@ -985,12 +1258,23 @@ async fn fetch_metadata(
 
         if !output.status.success() {
             let text = stderr_or_stdout(&output);
+            if is_tiktok_channel_url(url) {
+                if let Some(message) = tiktok_short_drama_error(url).await {
+                    return Err(message);
+                }
+            }
             return Err(friendly_error(&text));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let value = parse_metadata_json(&stdout)?;
-        previews.extend(metadata_previews_from_value(url, &value));
+        let next_previews = metadata_previews_from_value(url, &value);
+        if next_previews.is_empty() && is_tiktok_channel_url(url) {
+            if let Some(message) = tiktok_short_drama_error(url).await {
+                return Err(message);
+            }
+        }
+        previews.extend(next_previews);
     }
 
     Ok(previews)
@@ -1131,10 +1415,7 @@ fn validate_cookie_file(request: CookieFileRequest) -> Result<CookieFileStatus, 
 }
 
 #[tauri::command]
-fn delete_cookie_file(
-    app: AppHandle,
-    request: CookieFileRequest,
-) -> Result<(), String> {
+fn delete_cookie_file(app: AppHandle, request: CookieFileRequest) -> Result<(), String> {
     let platform = validate_cookie_platform(&request.platform)?;
     let managed_path = managed_cookie_path(&app, platform)?;
     let requested_path = request.path.as_deref().map(PathBuf::from);
@@ -1152,7 +1433,7 @@ fn delete_cookie_file(
 
 fn validate_cookie_platform(platform: &str) -> Result<&str, String> {
     match platform {
-        "bilibili" | "douyin" => Ok(platform),
+        "bilibili" | "douyin" | "tiktok" => Ok(platform),
         _ => Err("Unsupported cookie platform.".to_string()),
     }
 }
@@ -1161,6 +1442,7 @@ fn platform_cookie_probe_url(platform: &str) -> &'static str {
     match platform {
         "bilibili" => "https://www.bilibili.com/",
         "douyin" => "https://www.douyin.com/",
+        "tiktok" => "https://www.tiktok.com/",
         _ => "https://example.com/",
     }
 }
@@ -1190,8 +1472,7 @@ fn cookie_file_status(path: &Path) -> Result<CookieFileStatus, String> {
     let text =
         fs::read_to_string(path).map_err(|error| format!("Failed to read cookie file: {error}"))?;
     let has_header = text.lines().take(3).any(|line| {
-        line.trim() == "# Netscape HTTP Cookie File"
-            || line.contains("Netscape HTTP Cookie File")
+        line.trim() == "# Netscape HTTP Cookie File" || line.contains("Netscape HTTP Cookie File")
     });
     let cookie_count = text
         .lines()
@@ -1248,6 +1529,7 @@ async fn start_download(
     let args = build_yt_dlp_args(&request, ffmpeg_location.as_deref());
     let output_paths = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
     let danmaku_format = request.danmaku_format.clone();
+    let job_started_at = SystemTime::now();
 
     emit_event(
         &app,
@@ -1257,7 +1539,11 @@ async fn start_download(
             percent: None,
             speed: None,
             eta: None,
-            line: Some(format!("yt-dlp {}", args.join(" "))),
+            line: Some(format!(
+                "Starting download for {} item{}.",
+                request.urls.len(),
+                if request.urls.len() == 1 { "" } else { "s" }
+            )),
             output_path: None,
             media_report: None,
         },
@@ -1317,7 +1603,10 @@ async fn start_download(
 
         match status {
             Ok(exit) if exit.success() => {
-                let paths = output_paths.lock().await.clone();
+                let mut paths = output_paths.lock().await.clone();
+                if paths.is_empty() {
+                    paths = recent_media_outputs(&request.download_dir, job_started_at, request.urls.len());
+                }
                 if paths.is_empty() {
                     emit_event(
                         &app_handle,
@@ -1415,6 +1704,197 @@ async fn start_download(
 }
 
 #[tauri::command]
+async fn start_direct_download(
+    app: AppHandle,
+    state: State<'_, DownloadState>,
+    request: DirectDownloadRequest,
+) -> Result<String, String> {
+    if request.items.is_empty() {
+        return Err("Add at least one resolved media item.".to_string());
+    }
+
+    let download_dir = PathBuf::from(&request.download_dir);
+    if !download_dir.is_dir() {
+        return Err("The selected download folder does not exist.".to_string());
+    }
+
+    let job_id = Uuid::new_v4().to_string();
+    emit_event(
+        &app,
+        DownloadEvent {
+            job_id: job_id.clone(),
+            status: "starting".to_string(),
+            percent: None,
+            speed: None,
+            eta: None,
+            line: Some(format!(
+                "Direct media download queued for {} item{}.",
+                request.items.len(),
+                if request.items.len() == 1 { "" } else { "s" }
+            )),
+            output_path: None,
+            media_report: None,
+        },
+    );
+
+    state.direct_jobs.lock().await.insert(job_id.clone());
+    let state_handle = state.inner().clone();
+    let app_handle = app.clone();
+    let wait_job_id = job_id.clone();
+    tauri::async_runtime::spawn(async move {
+        let ffprobe = BinaryResolver::new(app_handle.clone()).ffprobe().ok();
+        let total_items = request.items.len();
+        let client = match reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(120))
+            .build()
+        {
+            Ok(client) => client,
+            Err(error) => {
+                state_handle.direct_jobs.lock().await.remove(&wait_job_id);
+                emit_event(
+                    &app_handle,
+                    DownloadEvent {
+                        job_id: wait_job_id,
+                        status: "failed".to_string(),
+                        percent: None,
+                        speed: None,
+                        eta: None,
+                        line: Some(format!("Failed to prepare direct downloader: {error}")),
+                        output_path: None,
+                        media_report: None,
+                    },
+                );
+                return;
+            }
+        };
+        let mut completed_paths = Vec::new();
+
+        for (index, item) in request.items.iter().enumerate() {
+            let was_canceled = state_handle.canceled.lock().await.contains(&wait_job_id);
+            if was_canceled {
+                state_handle.canceled.lock().await.remove(&wait_job_id);
+                state_handle.direct_jobs.lock().await.remove(&wait_job_id);
+                return;
+            }
+
+            emit_event(
+                &app_handle,
+                DownloadEvent {
+                    job_id: wait_job_id.clone(),
+                    status: "running".to_string(),
+                    percent: Some((index as f32 / total_items as f32) * 100.0),
+                    speed: None,
+                    eta: None,
+                    line: Some(format!(
+                        "[direct] Downloading item {} of {}: {}",
+                        index + 1,
+                        total_items,
+                        item.title
+                            .clone()
+                            .unwrap_or_else(|| item.source_url.clone())
+                    )),
+                    output_path: None,
+                    media_report: None,
+                },
+            );
+
+            match download_direct_media_item(
+                &client,
+                &download_dir,
+                item,
+                &wait_job_id,
+                &app_handle,
+            )
+            .await
+            {
+                Ok(path) => {
+                    completed_paths.push(path.clone());
+                    let report = match ffprobe.as_ref() {
+                        Some(ffprobe_path) => probe_media_with(ffprobe_path, &path).await.ok(),
+                        None => None,
+                    };
+                    emit_event(
+                        &app_handle,
+                        DownloadEvent {
+                            job_id: wait_job_id.clone(),
+                            status: "running".to_string(),
+                            percent: Some(((index + 1) as f32 / total_items as f32) * 100.0),
+                            speed: None,
+                            eta: None,
+                            line: Some(match &report {
+                                Some(report) => media_report_message(report),
+                                None => format!("Saved file: {}", path.display()),
+                            }),
+                            output_path: Some(path.display().to_string()),
+                            media_report: report,
+                        },
+                    );
+                }
+                Err(error) => {
+                    state_handle.canceled.lock().await.remove(&wait_job_id);
+                    state_handle.direct_jobs.lock().await.remove(&wait_job_id);
+                    emit_event(
+                        &app_handle,
+                        DownloadEvent {
+                            job_id: wait_job_id.clone(),
+                            status: "failed".to_string(),
+                            percent: None,
+                            speed: None,
+                            eta: None,
+                            line: Some(error),
+                            output_path: None,
+                            media_report: None,
+                        },
+                    );
+                    return;
+                }
+            }
+        }
+
+        state_handle.canceled.lock().await.remove(&wait_job_id);
+        state_handle.direct_jobs.lock().await.remove(&wait_job_id);
+        if completed_paths.is_empty() {
+            emit_event(
+                &app_handle,
+                DownloadEvent {
+                    job_id: wait_job_id,
+                    status: "failed".to_string(),
+                    percent: None,
+                    speed: None,
+                    eta: None,
+                    line: Some("No direct media files were downloaded.".to_string()),
+                    output_path: None,
+                    media_report: None,
+                },
+            );
+        } else {
+            emit_event(
+                &app_handle,
+                DownloadEvent {
+                    job_id: wait_job_id,
+                    status: "completed".to_string(),
+                    percent: Some(100.0),
+                    speed: None,
+                    eta: None,
+                    line: Some(format!(
+                        "Direct media download completed for {} item{}.",
+                        completed_paths.len(),
+                        if completed_paths.len() == 1 { "" } else { "s" }
+                    )),
+                    output_path: completed_paths
+                        .last()
+                        .map(|path| path.display().to_string()),
+                    media_report: None,
+                },
+            );
+        }
+    });
+
+    Ok(job_id)
+}
+
+#[tauri::command]
 async fn cancel_download(
     app: AppHandle,
     state: State<'_, DownloadState>,
@@ -1425,6 +1905,22 @@ async fn cancel_download(
     state.canceled.lock().await.insert(job_id.clone());
 
     let Some(pid) = pid else {
+        if state.direct_jobs.lock().await.contains(&job_id) {
+            emit_event(
+                &app,
+                DownloadEvent {
+                    job_id,
+                    status: "canceled".to_string(),
+                    percent: None,
+                    speed: None,
+                    eta: None,
+                    line: Some("Download canceled.".to_string()),
+                    output_path: None,
+                    media_report: None,
+                },
+            );
+            return Ok(());
+        }
         return Err("Download job was not found or already finished.".to_string());
     };
 
@@ -1447,6 +1943,103 @@ async fn cancel_download(
     );
 
     Ok(())
+}
+
+async fn download_direct_media_item(
+    client: &reqwest::Client,
+    download_dir: &Path,
+    item: &ResolvedMediaItem,
+    job_id: &str,
+    app: &AppHandle,
+) -> Result<PathBuf, String> {
+    let response = client
+        .get(&item.media_url)
+        .header(
+            reqwest::header::USER_AGENT,
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36",
+        )
+        .header(reqwest::header::ACCEPT, "*/*")
+        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
+        .header(reqwest::header::REFERER, &item.page_url)
+        .header(reqwest::header::RANGE, "bytes=0-")
+        .send()
+        .await
+        .map_err(|error| format!("Failed to request direct media URL: {error}"))?;
+
+    if !response.status().is_success() {
+        if response.status() == reqwest::StatusCode::FORBIDDEN {
+            return Err(format!(
+                "TikTok returned HTTP 403 for {}. The episode URL was resolved, but this signed media URL cannot be fetched outside the browser session. Re-scan and try again; if it still fails, this PineDrama profile likely needs browser-captured blob/stream download instead of direct HTTP.",
+                item.source_url
+            ));
+        }
+        return Err(format!(
+            "Direct media URL returned HTTP {} for {}.",
+            response.status(),
+            item.source_url
+        ));
+    }
+
+    let extension = media_extension(
+        response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        &item.media_url,
+    );
+    let output_dir = item
+        .output_folder
+        .as_deref()
+        .map(|folder| scoped_output_dir(download_dir, folder))
+        .unwrap_or_else(|| download_dir.to_path_buf());
+    fs::create_dir_all(&output_dir)
+        .map_err(|error| format!("Failed to create output folder: {error}"))?;
+    let output_stem = item
+        .output_filename
+        .as_deref()
+        .or(item.title.as_deref())
+        .or(item.uploader.as_deref())
+        .unwrap_or("tiktok");
+    let filename = unique_media_filename(&output_dir, &sanitize_filename(output_stem), &extension);
+
+    let mut file = fs::File::create(&filename)
+        .map_err(|error| format!("Failed to create output file: {error}"))?;
+    let mut downloaded_bytes = 0u64;
+    let total_bytes = response.content_length();
+    let mut response = response;
+
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("Failed while reading media response: {error}"))?
+    {
+        file.write_all(&chunk)
+            .map_err(|error| format!("Failed while writing media file: {error}"))?;
+        downloaded_bytes += chunk.len() as u64;
+        let percent =
+            total_bytes.map(|total| ((downloaded_bytes as f32 / total as f32) * 100.0).min(100.0));
+        emit_event(
+            app,
+            DownloadEvent {
+                job_id: job_id.to_string(),
+                status: "running".to_string(),
+                percent,
+                speed: None,
+                eta: None,
+                line: Some(format!(
+                    "[direct] Saved {} / {}",
+                    format_bytes(downloaded_bytes),
+                    total_bytes
+                        .map(format_bytes)
+                        .unwrap_or_else(|| "unknown".to_string())
+                )),
+                output_path: Some(filename.display().to_string()),
+                media_report: None,
+            },
+        );
+    }
+
+    Ok(filename)
 }
 
 async fn kill_process(pid: u32) -> Result<(), String> {
@@ -1537,7 +2130,17 @@ fn open_path(path: String) -> Result<(), String> {
     let status = if cfg!(target_os = "macos") {
         std::process::Command::new("open").arg(&path).status()
     } else if cfg!(windows) {
-        std::process::Command::new("explorer").arg(&path).status()
+        if path.is_file() {
+            let path_arg = path.display().to_string();
+            std::process::Command::new("cmd")
+                .arg("/C")
+                .arg("start")
+                .arg("")
+                .arg(path_arg)
+                .status()
+        } else {
+            std::process::Command::new("explorer").arg(&path).status()
+        }
     } else {
         std::process::Command::new("xdg-open").arg(&path).status()
     }
@@ -1955,9 +2558,98 @@ fn friendly_error(text: &str) -> String {
         "The selected format is not available for this URL. Try Best quality or Keep original codec.".to_string()
     } else if lower.contains("ffmpeg") && lower.contains("not found") {
         "ffmpeg was not found, so merge/convert may fail. Reinstall or refetch the sidecar binaries.".to_string()
+    } else if lower.contains("[tiktok:user]")
+        && (lower.contains("does not have any videos posted")
+            || lower.contains("unable to extract secondary user id"))
+    {
+        "TikTok did not expose normal profile videos for this account. If this is a Short Drama/PineDrama profile, share a direct episode link from the mobile app instead of the profile page.".to_string()
     } else {
         text.to_string()
     }
+}
+
+async fn tiktok_short_drama_error(url: &str) -> Option<String> {
+    let hint = fetch_tiktok_profile_hint(url).await.ok()?;
+    if !hint.short_drama_profile {
+        return None;
+    }
+
+    let mut detail = "TikTok mobile marks this profile as a Short Drama/Series profile, while the normal public video feed reports 0 videos.".to_string();
+    if hint.sec_uid.is_some() {
+        detail.push_str(" The account id is visible, but TikTok still does not expose episode items through the normal yt-dlp profile extractor.");
+    }
+    if !hint.possible_collection_ids.is_empty() {
+        detail.push_str(&format!(
+            " I found {} possible long-form collection id(s), but TikTok returned no public collection items for this profile.",
+            hint.possible_collection_ids.len()
+        ));
+    }
+
+    Some(format!(
+        "{detail} Open the film/episode inside TikTok or PineDrama and share a direct episode URL, usually a tiktok.com/@.../video/... link. Profile-only Short Drama pages cannot be previewed as normal TikTok channels yet."
+    ))
+}
+
+async fn fetch_tiktok_profile_hint(url: &str) -> Result<TikTokProfileHint, String> {
+    let response = reqwest::Client::new()
+        .get(url)
+        .header(reqwest::header::USER_AGENT, TIKTOK_MOBILE_USER_AGENT)
+        .send()
+        .await
+        .map_err(|error| format!("Failed to inspect TikTok mobile profile: {error}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "TikTok mobile profile returned HTTP {}",
+            response.status()
+        ));
+    }
+
+    let html = response
+        .text()
+        .await
+        .map_err(|error| format!("Failed to read TikTok mobile profile: {error}"))?;
+    Ok(parse_tiktok_profile_hint(&html))
+}
+
+fn parse_tiktok_profile_hint(html: &str) -> TikTokProfileHint {
+    let sec_uid = regex_capture(html, r#""secUid"\s*:\s*"([^"]+)""#);
+    let video_count = regex_capture(html, r#""videoCount"\s*:\s*"?(\d+)"?"#)
+        .and_then(|value| value.parse::<u64>().ok());
+    let has_short_drama_marker = html.contains(r#""shortDramaCreator""#)
+        || html.contains("shortDrama_")
+        || html.contains("Short Drama");
+    let short_drama_profile = has_short_drama_marker && video_count == Some(0);
+
+    let possible_collection_ids = regex_capture(html, r#""vidList"\s*:\s*\[([^\]]*)\]"#)
+        .map(|items| {
+            regex::Regex::new(r#""(\d{15,})""#)
+                .ok()
+                .map(|re| {
+                    re.captures_iter(&items)
+                        .filter_map(|capture| {
+                            capture.get(1).map(|value| value.as_str().to_string())
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+
+    TikTokProfileHint {
+        sec_uid,
+        video_count,
+        short_drama_profile,
+        possible_collection_ids,
+    }
+}
+
+fn regex_capture(text: &str, pattern: &str) -> Option<String> {
+    regex::Regex::new(pattern)
+        .ok()?
+        .captures(text)?
+        .get(1)
+        .map(|value| value.as_str().to_string())
 }
 
 fn parse_metadata_json(stdout: &str) -> Result<serde_json::Value, String> {
@@ -1991,6 +2683,9 @@ fn metadata_previews_from_value(
         .unwrap_or_default();
 
     if entries.is_empty() {
+        if value.get("_type").and_then(serde_json::Value::as_str) == Some("playlist") {
+            return Vec::new();
+        }
         return vec![metadata_from_value(source_url, value, None, None, None)];
     }
 
@@ -2073,6 +2768,8 @@ fn metadata_from_value(
         } else {
             None
         },
+        direct_media_url: None,
+        subtitle_url: None,
     }
 }
 
@@ -2163,6 +2860,8 @@ fn detect_platform(url: &str) -> &'static str {
         || lower.contains("amemv.com")
     {
         "Douyin"
+    } else if lower.contains("tiktok.com") {
+        "TikTok"
     } else if lower.contains("youtube.com") || lower.contains("youtu.be") {
         "YouTube"
     } else {
@@ -2177,6 +2876,15 @@ fn is_bilibili_channel_url(url: &str) -> bool {
         || lower.contains("space.bilibili.com/")
 }
 
+fn is_tiktok_channel_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    if !lower.contains("tiktok.com") {
+        return false;
+    }
+    // Match profile pages: tiktok.com/@username (with or without trailing path)
+    lower.contains("tiktok.com/@")
+}
+
 fn default_settings() -> AppSettings {
     AppSettings {
         download_dir: String::new(),
@@ -2188,6 +2896,8 @@ fn default_settings() -> AppSettings {
         embed_subtitles: false,
         danmaku_format: default_danmaku_format(),
         cookie_profiles: HashMap::new(),
+        gemini_api_key: String::new(),
+        gemini_model: default_gemini_model(),
     }
 }
 
@@ -2201,6 +2911,101 @@ fn default_subtitle_format() -> String {
 
 fn default_danmaku_format() -> String {
     "none".to_string()
+}
+
+fn default_gemini_model() -> String {
+    "gemini-3.1-flash-lite".to_string()
+}
+
+fn build_ai_batch_prompt(items: &[AiBatchInputItem]) -> Result<String, String> {
+    let json = serde_json::to_string(items)
+        .map_err(|error| format!("Failed to serialize batch items: {error}"))?;
+    Ok(format!(
+        r#"You organize TikTok/PineDrama short drama batches.
+
+Group the items into real drama series and assign episode numbers.
+Rules:
+- Preserve every input item exactly once.
+- Use key and url from the input; do not invent new keys or urls.
+- Prefer the on-screen scan order when titles are weak.
+- If items are newest-to-oldest, infer that descending episode numbers may belong to the same series.
+- Pinned items may appear before their natural position; place them by episode number when possible.
+- If all visible items look like one series, return one series.
+- Use concise human-readable series titles. If unknown, use the uploader name plus "Series".
+- episodeTitle may be an empty string when the title is only an episode number.
+
+Return JSON only with this schema:
+{{"series":[{{"seriesTitle":"...","episodes":[{{"key":"...","url":"...","episodeNumber":1,"episodeTitle":"..."}}]}}]}}
+
+Input items:
+{json}"#
+    ))
+}
+
+fn extract_json_payload(text: &str) -> String {
+    let trimmed = text.trim();
+    if let Some(stripped) = trimmed.strip_prefix("```json") {
+        return stripped.trim_end_matches("```").trim().to_string();
+    }
+    if let Some(stripped) = trimmed.strip_prefix("```") {
+        return stripped.trim_end_matches("```").trim().to_string();
+    }
+    trimmed.to_string()
+}
+
+fn validate_ai_batch_result(
+    result: AiBatchResult,
+    input_items: &[AiBatchInputItem],
+) -> Result<AiBatchResult, String> {
+    let expected: HashSet<String> = input_items.iter().map(|item| item.key.clone()).collect();
+    let mut seen = HashSet::new();
+
+    for series in &result.series {
+        if series.series_title.trim().is_empty() {
+            return Err("Gemini returned a series without a title.".to_string());
+        }
+        for episode in &series.episodes {
+            if !expected.contains(&episode.key) {
+                return Err("Gemini returned an item that is not in the current batch.".to_string());
+            }
+            if !seen.insert(episode.key.clone()) {
+                return Err("Gemini returned the same batch item more than once.".to_string());
+            }
+            if episode.episode_number == 0 {
+                return Err("Gemini returned an invalid episode number.".to_string());
+            }
+        }
+    }
+
+    if seen.len() != expected.len() {
+        return Err(format!(
+            "Gemini organized {} of {} items. Try a smaller scan limit.",
+            seen.len(),
+            expected.len()
+        ));
+    }
+
+    Ok(result)
+}
+
+fn compact_error_text(text: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(serde_json::Value::as_str)
+                .map(|message| message.to_string())
+        })
+        .unwrap_or_else(|| text.chars().take(600).collect())
+}
+
+fn encode_model_path(model: &str) -> String {
+    model
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/'))
+        .collect()
 }
 
 fn settings_path(app: &AppHandle) -> Option<PathBuf> {
@@ -2511,6 +3316,70 @@ fn image_extension(content_type: Option<&str>, url: &str) -> String {
     "jpg".to_string()
 }
 
+fn media_extension(content_type: Option<&str>, url: &str) -> String {
+    if let Some(content_type) = content_type {
+        if content_type.contains("mp4") {
+            return "mp4".to_string();
+        }
+        if content_type.contains("webm") {
+            return "webm".to_string();
+        }
+        if content_type.contains("mpegurl") || content_type.contains("m3u8") {
+            return "m3u8".to_string();
+        }
+    }
+
+    let clean_url = url.split('?').next().unwrap_or(url).to_ascii_lowercase();
+    for extension in ["mp4", "webm", "mov", "m4v", "m3u8"] {
+        if clean_url.ends_with(&format!(".{extension}")) {
+            return extension.to_string();
+        }
+    }
+
+    "mp4".to_string()
+}
+
+fn recent_media_outputs(download_dir: &str, since: SystemTime, limit: usize) -> Vec<PathBuf> {
+    let mut candidates = match fs::read_dir(download_dir) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let path = entry.path();
+                if !path.is_file() || !is_media_output_path(&path) {
+                    return None;
+                }
+
+                let modified = entry.metadata().ok()?.modified().ok()?;
+                if modified < since {
+                    return None;
+                }
+
+                Some((modified, path))
+            })
+            .collect::<Vec<_>>(),
+        Err(_) => Vec::new(),
+    };
+
+    candidates.sort_by(|left, right| right.0.cmp(&left.0));
+    candidates
+        .into_iter()
+        .take(limit.max(1))
+        .map(|(_, path)| path)
+        .collect()
+}
+
+fn is_media_output_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "mp4" | "mkv" | "webm" | "mov" | "m4v" | "mp3" | "m4a" | "aac" | "flac" | "wav"
+            )
+        })
+        .unwrap_or(false)
+}
+
 fn sanitize_filename(value: &str) -> String {
     let mut name = value
         .chars()
@@ -2530,6 +3399,19 @@ fn sanitize_filename(value: &str) -> String {
     name.chars().take(120).collect()
 }
 
+fn scoped_output_dir(base: &Path, folder: &str) -> PathBuf {
+    let mut path = base.to_path_buf();
+    for part in folder
+        .split(['/', '\\'])
+        .map(sanitize_filename)
+        .filter(|part| !part.is_empty())
+        .take(4)
+    {
+        path.push(part);
+    }
+    path
+}
+
 fn unique_filename(dir: &Path, stem: &str, extension: &str) -> PathBuf {
     let mut candidate = dir.join(format!("{stem} cover.{extension}"));
     let mut index = 2;
@@ -2538,6 +3420,32 @@ fn unique_filename(dir: &Path, stem: &str, extension: &str) -> PathBuf {
         index += 1;
     }
     candidate
+}
+
+fn unique_media_filename(dir: &Path, stem: &str, extension: &str) -> PathBuf {
+    let mut candidate = dir.join(format!("{stem}.{extension}"));
+    let mut index = 2;
+    while candidate.exists() {
+        candidate = dir.join(format!("{stem} {index}.{extension}"));
+        index += 1;
+    }
+    candidate
+}
+
+fn format_bytes(value: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut size = value as f64;
+    let mut unit_index = 0usize;
+    while size >= 1024.0 && unit_index < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit_index += 1;
+    }
+
+    if unit_index == 0 {
+        format!("{} {}", value, UNITS[unit_index])
+    } else {
+        format!("{size:.1} {}", UNITS[unit_index])
+    }
 }
 
 pub fn run() {
@@ -2558,6 +3466,7 @@ pub fn run() {
             load_settings,
             save_settings,
             drain_extension_imports,
+            organize_batch_with_ai,
             get_chrome_integration_status,
             install_chrome_integration,
             remove_chrome_integration,
@@ -2569,6 +3478,7 @@ pub fn run() {
             validate_cookie_file,
             delete_cookie_file,
             start_download,
+            start_direct_download,
             cancel_download,
             probe_media,
             convert_to_h264,
@@ -2628,6 +3538,7 @@ mod tests {
             id: "one".to_string(),
             action: "ping".to_string(),
             urls: Vec::new(),
+            items: Vec::new(),
             source: None,
         };
         let invalid_action = NativeRequest {
@@ -2635,6 +3546,7 @@ mod tests {
             id: "two".to_string(),
             action: "launch_missiles".to_string(),
             urls: Vec::new(),
+            items: Vec::new(),
             source: None,
         };
 
@@ -2776,6 +3688,32 @@ mod tests {
         assert!(is_bilibili_channel_url(
             "https://space.bilibili.com/6087825?spm_id_from=333.1007.tianma.8-1-27.click"
         ));
+    }
+
+    #[test]
+    fn tiktok_short_drama_mobile_profile_is_detected() {
+        let hint = parse_tiktok_profile_hint(
+            r#"{"webapp.user-detail":{"userInfo":{"user":{"secUid":"MS4w","shortDramaCreator":{}},"stats":{"videoCount":0},"statsV2":{"videoCount":"0"}}},"seo.abtest":{"vidList":["75323602","73070174","7371330159376370462"]}}"#,
+        );
+
+        assert_eq!(hint.sec_uid.as_deref(), Some("MS4w"));
+        assert_eq!(hint.video_count, Some(0));
+        assert!(hint.short_drama_profile);
+        assert_eq!(
+            hint.possible_collection_ids,
+            vec!["7371330159376370462".to_string()]
+        );
+    }
+
+    #[test]
+    fn empty_playlist_metadata_does_not_create_preview_item() {
+        let value = serde_json::json!({
+            "_type": "playlist",
+            "entries": [],
+            "title": "empty profile"
+        });
+
+        assert!(metadata_previews_from_value("https://www.tiktok.com/@empty", &value).is_empty());
     }
 
     #[test]

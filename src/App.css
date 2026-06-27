@@ -47,6 +47,7 @@ h2 {
 }
 
 button,
+input,
 textarea {
   font: inherit;
 }
@@ -399,6 +400,204 @@ textarea:focus,
 .metadata-list {
   display: grid;
   gap: 10px;
+}
+
+.text-input,
+.select-input,
+.number-input {
+  min-height: 38px;
+  min-width: 0;
+  width: 100%;
+  padding: 0 10px;
+  color: #111827;
+  background: #ffffff;
+  border: 1px solid #d8dee9;
+  border-radius: 8px;
+  outline: none;
+}
+
+.text-input:focus,
+.select-input:focus,
+.number-input:focus {
+  border-color: #1463ff;
+  box-shadow: 0 0 0 3px rgba(20, 99, 255, 0.14);
+}
+
+.field-block.compact {
+  gap: 5px;
+}
+
+.batch-organizer {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #cbd7eb;
+  border-radius: 8px;
+  background: #f8fbff;
+}
+
+.batch-organizer-heading,
+.batch-series-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.batch-organizer-heading div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.batch-organizer-heading strong {
+  color: #111827;
+  font-size: 14px;
+}
+
+.batch-organizer-heading span,
+.batch-organizer-heading small {
+  color: #526071;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.batch-organizer-heading .batch-heading-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  flex-direction: row;
+  gap: 8px;
+}
+
+.batch-heading-actions .select-input {
+  width: 150px;
+}
+
+.ai-organizer-panel {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.2fr) minmax(190px, 0.8fr) max-content;
+  align-items: end;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #d8dee9;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.ai-organizer-panel label {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ai-organizer-panel label span {
+  color: #526071;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.batch-series-list {
+  display: grid;
+  gap: 10px;
+}
+
+.batch-series {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #d8dee9;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.batch-series-top {
+  align-items: end;
+}
+
+.batch-series-top .field-block {
+  flex: 1 1 360px;
+}
+
+.batch-series-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.batch-series-actions > span {
+  color: #526071;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.episode-table {
+  display: grid;
+  gap: 8px;
+}
+
+.episode-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 58px 82px minmax(0, 1fr) minmax(180px, 0.6fr);
+  align-items: end;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 8px;
+  background: #f7f9fc;
+}
+
+.episode-row.pinned {
+  border: 1px solid #f0c36d;
+  background: #fff9ed;
+}
+
+.episode-row.out-of-order {
+  border: 1px solid #ffc7ba;
+}
+
+.episode-row img,
+.episode-row .thumb-empty {
+  width: 58px;
+  aspect-ratio: 9 / 12;
+}
+
+.episode-row label {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.episode-row label span {
+  color: #697386;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.episode-row small,
+.episode-more {
+  min-width: 0;
+  color: #526071;
+  font-size: 12px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.episode-more {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #eef2f7;
 }
 
 .selection-bar {
@@ -806,6 +1005,14 @@ textarea:focus,
 .pane-heading {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+}
+
+.pane-heading > div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
   gap: 9px;
 }
 
@@ -1138,8 +1345,20 @@ pre {
   .control-grid,
   .platform-cookie-grid,
   .subtitle-grid,
+  .ai-organizer-panel,
+  .episode-row,
   .metadata-card {
     grid-template-columns: 1fr;
+  }
+
+  .batch-organizer-heading,
+  .batch-series-top {
+    flex-direction: column;
+  }
+
+  .batch-series-actions {
+    width: 100%;
+    justify-content: flex-start;
   }
 
   .selection-bar {

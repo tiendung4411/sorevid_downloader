@@ -2,6 +2,7 @@ import {
   NATIVE_HOST,
   platformForUrl,
   requestId,
+  type ResolvedMediaItem,
   type NativeRequest,
   type NativeResponse,
   type Trigger,
@@ -14,12 +15,32 @@ type SendUrlMessage = {
   trigger: Trigger
 }
 
+type ScanProfileMessage = {
+  type: 'scan-profile'
+  tabId: number
+  pageUrl: string
+  title?: string
+  limit?: number
+}
+
+type ScanTikTokProfileResponse = {
+  ok: boolean
+  error?: string
+  items: ResolvedMediaItem[]
+}
+
+type ScanTikTokProfileMessage = {
+  type: 'scan-tiktok-profile'
+  limit?: number
+}
+
 const supportedPatterns = [
   'https://*.bilibili.com/*',
   'https://b23.tv/*',
   'https://*.douyin.com/*',
   'https://*.iesdouyin.com/*',
   'https://*.amemv.com/*',
+  'https://*.tiktok.com/*',
 ]
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -65,20 +86,38 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 })
 
 chrome.runtime.onMessage.addListener(
-  (message: SendUrlMessage, _sender, sendResponse: (response: NativeResponse) => void) => {
-    if (message?.type !== 'send-url') return false
-    sendUrl(message.url, message.title, message.trigger)
-      .then(sendResponse)
-      .catch((error) => {
-        sendResponse({
-          version: 1,
-          id: '',
-          ok: false,
-          code: 'app_unavailable',
-          message: error instanceof Error ? error.message : String(error),
+  (message: SendUrlMessage | ScanProfileMessage, _sender, sendResponse: (response: NativeResponse) => void) => {
+    if (message?.type === 'send-url') {
+      sendUrl(message.url, message.title, message.trigger)
+        .then(sendResponse)
+        .catch((error) => {
+          sendResponse({
+            version: 1,
+            id: '',
+            ok: false,
+            code: 'app_unavailable',
+            message: error instanceof Error ? error.message : String(error),
+          })
         })
-      })
-    return true
+      return true
+    }
+
+    if (message?.type === 'scan-profile') {
+      scanTikTokProfile(message.tabId, message.pageUrl, message.title, message.limit)
+        .then(sendResponse)
+        .catch((error) => {
+          sendResponse({
+            version: 1,
+            id: '',
+            ok: false,
+            code: 'app_unavailable',
+            message: error instanceof Error ? error.message : String(error),
+          })
+        })
+      return true
+    }
+
+    return false
   },
 )
 
@@ -110,6 +149,86 @@ function sendUrl(url: string, title: string | undefined, trigger: Trigger) {
       resolve(response)
     })
   })
+}
+
+export async function scanTikTokProfile(tabId: number, pageUrl: string, title?: string, limit?: number) {
+  const response = await sendTikTokScanMessage(tabId, limit)
+
+  if (!response?.ok) {
+    throw new Error(response?.error || 'TikTok scan failed.')
+  }
+
+  if (!response.items?.length) {
+    throw new Error('No TikTok videos were resolved from this profile.')
+  }
+
+  const request: NativeRequest = {
+    version: 1,
+    id: requestId(),
+    action: 'import_resolved_media',
+    items: response.items,
+    source: {
+      pageUrl,
+      title,
+      platform: 'tiktok',
+      trigger: 'profile-scan',
+    },
+  }
+
+  return new Promise<NativeResponse>((resolve, reject) => {
+    chrome.runtime.sendNativeMessage(NATIVE_HOST, request, (nativeResponse: NativeResponse | undefined) => {
+      const error = chrome.runtime.lastError
+      if (error) {
+        reject(new Error(nativeErrorMessage(error.message || 'Unknown native messaging error.')))
+        return
+      }
+      if (!nativeResponse) {
+        reject(new Error('Sorevid did not return a response.'))
+        return
+      }
+      resolve(nativeResponse)
+    })
+  })
+}
+
+async function sendTikTokScanMessage(tabId: number, limit?: number) {
+  const message = { type: 'scan-tiktok-profile' as const, limit }
+  try {
+    return await chrome.tabs.sendMessage<ScanTikTokProfileMessage, ScanTikTokProfileResponse>(
+      tabId,
+      message,
+    )
+  } catch (error) {
+    if (!isMissingContentScriptError(error)) {
+      throw error
+    }
+    await injectContentScript(tabId)
+    await wait(250)
+    return chrome.tabs.sendMessage<ScanTikTokProfileMessage, ScanTikTokProfileResponse>(
+      tabId,
+      message,
+    )
+  }
+}
+
+async function injectContentScript(tabId: number) {
+  await chrome.scripting.insertCSS({
+    target: { tabId },
+    files: ['content.css'],
+  })
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ['content.js'],
+  })
+}
+
+function isMissingContentScriptError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.toLowerCase().includes('receiving end does not exist')
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function nativeErrorMessage(message: string) {

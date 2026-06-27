@@ -1,4 +1,4 @@
-import { cp, mkdir, rm } from 'node:fs/promises'
+import { cp, mkdir } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -9,6 +9,10 @@ await mkdir(output, { recursive: true })
 for (const file of ['manifest.json', 'popup.html', 'popup.css', 'content.css']) {
   await cp(resolve(here, file), resolve(output, file))
 }
-await rm(resolve(output, 'icons'), { recursive: true, force: true })
 await mkdir(resolve(output, 'icons'), { recursive: true })
-await cp(resolve(here, '..', 'app-icon.png'), resolve(output, 'icons', 'icon.png'))
+try {
+  await cp(resolve(here, '..', 'app-icon.png'), resolve(output, 'icons', 'icon.png'))
+} catch (error) {
+  if (error?.code !== 'EPERM') throw error
+  console.warn('Skipped icon refresh because Chrome is currently using it.')
+}

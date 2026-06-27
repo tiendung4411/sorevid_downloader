@@ -1,7 +1,29 @@
 export const NATIVE_HOST = 'com.sorevid.downloader'
 
-export type Trigger = 'popup' | 'context-menu' | 'player-button'
-export type Platform = 'bilibili' | 'douyin' | 'other'
+export type Trigger = 'popup' | 'context-menu' | 'player-button' | 'profile-scan'
+export type Platform = 'bilibili' | 'douyin' | 'tiktok' | 'other'
+
+export type ResolvedSubtitle = {
+  format?: string
+  language?: string
+  url: string
+}
+
+export type ResolvedMediaItem = {
+  sourceUrl: string
+  pageUrl: string
+  mediaUrl: string
+  title?: string
+  uploader?: string
+  duration?: number
+  thumbnail?: string
+  videoCodec?: string
+  audioCodec?: string
+  width?: number
+  height?: number
+  subtitles?: ResolvedSubtitle[]
+  isPinned?: boolean
+}
 
 export type NativeRequest =
   | { version: 1; id: string; action: 'ping' }
@@ -10,6 +32,18 @@ export type NativeRequest =
       id: string
       action: 'import_urls'
       urls: string[]
+      source: {
+        pageUrl?: string
+        title?: string
+        platform?: Platform
+        trigger: Trigger
+      }
+    }
+  | {
+      version: 1
+      id: string
+      action: 'import_resolved_media'
+      items: ResolvedMediaItem[]
       source: {
         pageUrl?: string
         title?: string
@@ -35,6 +69,9 @@ export type NativeResponse = {
 export function platformForUrl(url: string): Platform {
   try {
     const host = new URL(url).hostname.toLowerCase()
+    if (host === 'tiktok.com' || host.endsWith('.tiktok.com')) {
+      return 'tiktok'
+    }
     if (host === 'b23.tv' || host === 'bilibili.com' || host.endsWith('.bilibili.com')) {
       return 'bilibili'
     }

@@ -53,6 +53,35 @@ p {
   background: #fff;
 }
 
+.scan-options {
+  padding: 10px 12px;
+  border: 1px solid #d8dee9;
+  border-radius: 9px;
+  background: #fff;
+}
+
+.scan-options label {
+  display: grid;
+  gap: 7px;
+}
+
+.scan-options span {
+  color: #344054;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.scan-options select {
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid #d8dee9;
+  border-radius: 8px;
+  color: #172033;
+  background: #f9fafc;
+  font: inherit;
+  font-size: 13px;
+}
+
 .page-card strong,
 .page-card span {
   overflow: hidden;
@@ -91,6 +120,12 @@ button {
   font: inherit;
   font-weight: 800;
   cursor: pointer;
+}
+
+button.secondary {
+  color: #164680;
+  background: #e8f0ff;
+  border: 1px solid #bfd2ff;
 }
 
 button:disabled {
