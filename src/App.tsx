@@ -88,6 +88,7 @@ type MetadataPreview = {
   directMediaUrl?: string
   subtitleUrl?: string
   isPinned?: boolean
+  cookieHeader?: string
 }
 
 type BatchItemEdit = {
@@ -132,6 +133,7 @@ type ResolvedMediaItem = {
   height?: number
   subtitles?: ResolvedSubtitle[]
   isPinned?: boolean
+  cookieHeader?: string
 }
 
 type ExtensionImportPayload = {
@@ -147,6 +149,8 @@ type AiBatchInputItem = {
   scanIndex: number
   episodeNumber?: number
   isPinned: boolean
+  namePattern: string
+  ruleSeriesHint: string
 }
 
 type AiBatchResult = {
@@ -234,6 +238,7 @@ type DirectDownloadItem = {
   subtitles?: ResolvedSubtitle[]
   outputFolder?: string
   outputFilename?: string
+  cookieHeader?: string
 }
 
 type ChromeIntegrationStatus = {
@@ -927,7 +932,10 @@ function App() {
     const directItems = directSourceEntries
       .filter((entry) => entry.item.directMediaUrl)
       .map((entry) => directDownloadItemFromMetadata(entry.item, organizedItemByKey.get(entry.key) || entry))
-    const regularItems = selectedItems.filter((item) => !item.directMediaUrl)
+    const regularItemsBase = selectedItems.filter((item) => !item.directMediaUrl)
+    const regularItems = directItems.length > 0
+      ? regularItemsBase.filter((item) => getPlatformForUrl(item.url) !== 'tiktok')
+      : regularItemsBase
     const downloadUrls = selectedItems.length > 0 ? regularItems.map((item) => item.url) : urls
     const downloadTitles = regularItems.map((item) => displayPartTitle(item))
 
@@ -1278,6 +1286,8 @@ function App() {
           scanIndex: index + 1,
           episodeNumber: edit?.episodeNumber || suggested.episodeNumber,
           isPinned: Boolean(item.isPinned),
+          namePattern: inferTitlePattern(item.title || displayPartTitle(item)),
+          ruleSeriesHint: inferRuleSeriesHint(item.title || displayPartTitle(item), item.uploader),
         }
       })
       const result = await invoke<AiBatchResult>('organize_batch_with_ai', {
@@ -1287,7 +1297,7 @@ function App() {
           items,
         },
       })
-      applyAiBatchResult(result)
+      applyAiBatchResult(refineAiBatchResult(result, items))
       setBatchOrder('asScanned')
     } catch (err) {
       setError(String(err))
@@ -2420,6 +2430,7 @@ function metadataFromResolvedMedia(item: ResolvedMediaItem): MetadataPreview {
     directMediaUrl: item.mediaUrl,
     subtitleUrl: item.subtitles?.[0]?.url,
     isPinned: item.isPinned,
+    cookieHeader: item.cookieHeader,
   }
 }
 
@@ -2462,6 +2473,7 @@ function directDownloadItemFromMetadata(
     subtitles: item.subtitleUrl ? [{ url: item.subtitleUrl }] : [],
     outputFolder: organized?.seriesTitle,
     outputFilename: organized?.outputTitle,
+    cookieHeader: item.cookieHeader,
   }
 }
 
@@ -2639,6 +2651,79 @@ function buildBatchAiPrompt(series: OrganizedSeries[]) {
     '',
     rows.join('\n'),
   ].join('\n')
+}
+
+function refineAiBatchResult(result: AiBatchResult, inputItems: AiBatchInputItem[]): AiBatchResult {
+  if (result.series.length !== 1 || inputItems.length < 2) {
+    return result
+  }
+
+  const hints = new Map<string, AiBatchInputItem[]>()
+  inputItems.forEach((item) => {
+    const hint = item.ruleSeriesHint || item.namePattern || item.uploader || 'Unknown Series'
+    if (!hints.has(hint)) hints.set(hint, [])
+    hints.get(hint)!.push(item)
+  })
+
+  const meaningfulHints = Array.from(hints.entries()).filter(
+    ([hint, items]) => !/^unknown series$/i.test(hint) && items.length > 0,
+  )
+  if (meaningfulHints.length <= 1) {
+    return result
+  }
+
+  return {
+    series: meaningfulHints.map(([hint, items]) => ({
+      seriesTitle: hint,
+      episodes: items.map((item, index) => ({
+        key: item.key,
+        url: item.url,
+        episodeNumber: item.episodeNumber || index + 1,
+        episodeTitle: stripEpisodeMarker(item.title).trim(),
+      })),
+    })),
+  }
+}
+
+function inferTitlePattern(title: string) {
+  const value = title.trim()
+  if (/_batch(?:\.mp4)?$/i.test(value) || /^\d+_batch(?:\.mp4)?$/i.test(value)) {
+    return 'number_batch'
+  }
+  if (/\bepis[oó]dio\b/i.test(value)) {
+    return 'episodio_number'
+  }
+  if (/[\u3400-\u9fff]/.test(value)) {
+    return 'chinese_title'
+  }
+  if (isEpisodeOnlyTitle(value)) {
+    return 'episode_only'
+  }
+  return 'descriptive_title'
+}
+
+function inferRuleSeriesHint(title: string, uploader?: string) {
+  const value = title.trim()
+  const batchMatch = value.match(/^(\d+)_batch(?:\.mp4)?$/i)
+  if (batchMatch) {
+    return 'Batch clips'
+  }
+
+  const chineseMatch = value.match(/^(.+?)(?:[_\s-]*(?:中巴葡)?[_\s-]*\d+)?$/)
+  if (chineseMatch && /[\u3400-\u9fff]/.test(chineseMatch[1])) {
+    return chineseMatch[1].replace(/[_\s-]+$/g, '')
+  }
+
+  if (/\bepis[oó]dio\b/i.test(value)) {
+    return `${uploader || 'TikTok'} Episódio Series`
+  }
+
+  if (isEpisodeOnlyTitle(value)) {
+    return `${uploader || 'TikTok'} Numbered Series`
+  }
+
+  const stripped = stripEpisodeMarker(value).trim()
+  return stripped || `${uploader || 'TikTok'} Series`
 }
 
 function normalizeUrlCandidate(value: string) {

@@ -21,6 +21,7 @@ type ScanProfileMessage = {
   pageUrl: string
   title?: string
   limit?: number
+  mode?: TikTokScanMode
 }
 
 type ScanTikTokProfileResponse = {
@@ -32,7 +33,10 @@ type ScanTikTokProfileResponse = {
 type ScanTikTokProfileMessage = {
   type: 'scan-tiktok-profile'
   limit?: number
+  mode?: TikTokScanMode
 }
+
+type TikTokScanMode = 'fast' | 'safe' | 'slow'
 
 const supportedPatterns = [
   'https://*.bilibili.com/*',
@@ -103,7 +107,7 @@ chrome.runtime.onMessage.addListener(
     }
 
     if (message?.type === 'scan-profile') {
-      scanTikTokProfile(message.tabId, message.pageUrl, message.title, message.limit)
+      scanTikTokProfile(message.tabId, message.pageUrl, message.title, message.limit, message.mode)
         .then(sendResponse)
         .catch((error) => {
           sendResponse({
@@ -151,8 +155,14 @@ function sendUrl(url: string, title: string | undefined, trigger: Trigger) {
   })
 }
 
-export async function scanTikTokProfile(tabId: number, pageUrl: string, title?: string, limit?: number) {
-  const response = await sendTikTokScanMessage(tabId, limit)
+export async function scanTikTokProfile(
+  tabId: number,
+  pageUrl: string,
+  title?: string,
+  limit?: number,
+  mode?: TikTokScanMode,
+) {
+  const response = await sendTikTokScanMessage(tabId, limit, mode)
 
   if (!response?.ok) {
     throw new Error(response?.error || 'TikTok scan failed.')
@@ -161,12 +171,16 @@ export async function scanTikTokProfile(tabId: number, pageUrl: string, title?: 
   if (!response.items?.length) {
     throw new Error('No TikTok videos were resolved from this profile.')
   }
+  const cookieHeader = await tiktokCookieHeader(pageUrl)
+  const items = cookieHeader
+    ? response.items.map((item) => ({ ...item, cookieHeader }))
+    : response.items
 
   const request: NativeRequest = {
     version: 1,
     id: requestId(),
     action: 'import_resolved_media',
-    items: response.items,
+    items,
     source: {
       pageUrl,
       title,
@@ -191,8 +205,23 @@ export async function scanTikTokProfile(tabId: number, pageUrl: string, title?: 
   })
 }
 
-async function sendTikTokScanMessage(tabId: number, limit?: number) {
-  const message = { type: 'scan-tiktok-profile' as const, limit }
+async function tiktokCookieHeader(pageUrl: string) {
+  try {
+    const parsed = new URL(pageUrl)
+    const cookies = await chrome.cookies.getAll({
+      domain: parsed.hostname.replace(/^www\./, ''),
+    })
+    return cookies
+      .filter((cookie) => cookie.name && cookie.value)
+      .map((cookie) => `${cookie.name}=${cookie.value}`)
+      .join('; ')
+  } catch {
+    return ''
+  }
+}
+
+async function sendTikTokScanMessage(tabId: number, limit?: number, mode?: TikTokScanMode) {
+  const message = { type: 'scan-tiktok-profile' as const, limit, mode }
   try {
     return await chrome.tabs.sendMessage<ScanTikTokProfileMessage, ScanTikTokProfileResponse>(
       tabId,

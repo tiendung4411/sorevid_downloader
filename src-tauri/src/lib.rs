@@ -103,6 +103,7 @@ struct ResolvedMediaItem {
     output_filename: Option<String>,
     #[serde(default)]
     is_pinned: bool,
+    cookie_header: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -193,6 +194,8 @@ struct AiBatchInputItem {
     scan_index: usize,
     episode_number: Option<u64>,
     is_pinned: bool,
+    name_pattern: String,
+    rule_series_hint: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -729,6 +732,7 @@ fn process_gui_request(
                 output_folder: item.output_folder.clone(),
                 output_filename: item.output_filename.clone(),
                 is_pinned: item.is_pinned,
+                cookie_header: item.cookie_header.clone(),
             });
         }
 
@@ -1952,7 +1956,7 @@ async fn download_direct_media_item(
     job_id: &str,
     app: &AppHandle,
 ) -> Result<PathBuf, String> {
-    let response = client
+    let mut request = client
         .get(&item.media_url)
         .header(
             reqwest::header::USER_AGENT,
@@ -1961,7 +1965,11 @@ async fn download_direct_media_item(
         .header(reqwest::header::ACCEPT, "*/*")
         .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
         .header(reqwest::header::REFERER, &item.page_url)
-        .header(reqwest::header::RANGE, "bytes=0-")
+        .header(reqwest::header::RANGE, "bytes=0-");
+    if let Some(cookie_header) = item.cookie_header.as_deref().filter(|value| !value.trim().is_empty()) {
+        request = request.header(reqwest::header::COOKIE, cookie_header);
+    }
+    let response = request
         .send()
         .await
         .map_err(|error| format!("Failed to request direct media URL: {error}"))?;
@@ -1969,8 +1977,13 @@ async fn download_direct_media_item(
     if !response.status().is_success() {
         if response.status() == reqwest::StatusCode::FORBIDDEN {
             return Err(format!(
-                "TikTok returned HTTP 403 for {}. The episode URL was resolved, but this signed media URL cannot be fetched outside the browser session. Re-scan and try again; if it still fails, this PineDrama profile likely needs browser-captured blob/stream download instead of direct HTTP.",
-                item.source_url
+                "TikTok returned HTTP 403 for {}. The episode URL was resolved, but the media CDN rejected the desktop download request{} Re-scan and try again; if it still fails, this PineDrama profile likely needs browser-captured download instead of direct HTTP.",
+                item.source_url,
+                if item.cookie_header.as_deref().is_some_and(|value| !value.trim().is_empty()) {
+                    " even with Chrome TikTok cookies."
+                } else {
+                    "."
+                }
             ));
         }
         return Err(format!(
@@ -2928,9 +2941,13 @@ Rules:
 - Preserve every input item exactly once.
 - Use key and url from the input; do not invent new keys or urls.
 - Prefer the on-screen scan order when titles are weak.
+- Strongly prefer splitting items with different ruleSeriesHint/namePattern into different series.
+- Titles like "1_batch", "2_batch", "7_batch.mp4" are usually one batch/series, not the same series as "Episódio 7" or Chinese drama titles.
+- Titles with Chinese drama names before the final number usually belong to the Chinese title series.
+- Generic uploader fallback titles such as "Teatrohoney Series" should only be used when no title pattern or ruleSeriesHint exists.
 - If items are newest-to-oldest, infer that descending episode numbers may belong to the same series.
 - Pinned items may appear before their natural position; place them by episode number when possible.
-- If all visible items look like one series, return one series.
+- Return one series only if the names genuinely look like the same drama/playlist.
 - Use concise human-readable series titles. If unknown, use the uploader name plus "Series".
 - episodeTitle may be an empty string when the title is only an episode number.
 

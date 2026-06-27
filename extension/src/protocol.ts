@@ -23,6 +23,7 @@ export type ResolvedMediaItem = {
   height?: number
   subtitles?: ResolvedSubtitle[]
   isPinned?: boolean
+  cookieHeader?: string
 }
 
 export type NativeRequest =

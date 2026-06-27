@@ -8,6 +8,7 @@ const sendButton = document.querySelector<HTMLButtonElement>('#send')!
 const scanButton = document.querySelector<HTMLButtonElement>('#scan')!
 const scanOptionsElement = document.querySelector<HTMLElement>('#scan-options')!
 const scanLimitElement = document.querySelector<HTMLSelectElement>('#scan-limit')!
+const scanModeElement = document.querySelector<HTMLSelectElement>('#scan-mode')!
 
 let activeTab: chrome.tabs.Tab | undefined
 
@@ -85,6 +86,7 @@ scanButton.addEventListener('click', () => {
       pageUrl: url,
       title: activeTab?.title,
       limit: Number(scanLimitElement.value) || undefined,
+      mode: scanModeElement.value,
     },
     (response: NativeResponse | undefined) => {
       const error = chrome.runtime.lastError

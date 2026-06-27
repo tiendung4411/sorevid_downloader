@@ -28,6 +28,16 @@ type ResolvedMediaItem = {
 type ScanProfileMessage = {
   type: 'scan-tiktok-profile'
   limit?: number
+  mode?: TikTokScanMode
+}
+
+type TikTokScanMode = 'fast' | 'safe' | 'slow'
+
+type ScanTiming = {
+  scrollDelay: [number, number]
+  resolveDelay: [number, number]
+  pauseEvery: number
+  pauseDelay: [number, number]
 }
 
 const hostMarker = 'sorevidPlayerButton'
@@ -44,7 +54,7 @@ setInterval(scanPlayers, 3000)
 chrome.runtime.onMessage.addListener((message: ScanProfileMessage, _sender, sendResponse) => {
   if (message?.type !== 'scan-tiktok-profile') return false
 
-  scanTikTokProfile(message.limit)
+  scanTikTokProfile(message.limit, message.mode)
     .then((items) => sendResponse({ ok: true, items }))
     .catch((error) => {
       sendResponse({
@@ -123,7 +133,7 @@ function sendCurrentPage(button: HTMLButtonElement) {
   )
 }
 
-async function scanTikTokProfile(limit?: number) {
+async function scanTikTokProfile(limit?: number, mode: TikTokScanMode = 'safe') {
   if (!isTikTokProfilePage()) {
     throw new Error('Open a TikTok profile page before scanning.')
   }
@@ -131,7 +141,8 @@ async function scanTikTokProfile(limit?: number) {
   const dramaTab = document.querySelector<HTMLElement>(shortDramaTabSelector)
   const isDramaVisible = dramaTab && getComputedStyle(dramaTab).display !== 'none'
   const scanLimit = typeof limit === 'number' && limit > 0 ? limit : undefined
-  const links = await collectProfileVideoLinks(scanLimit)
+  const timing = scanTiming(mode)
+  const links = await collectProfileVideoLinks(scanLimit, timing)
   if (links.length === 0) {
     throw new Error('No TikTok video links were visible after scanning this profile.')
   }
@@ -139,11 +150,25 @@ async function scanTikTokProfile(limit?: number) {
   const resolved: ResolvedMediaItem[] = []
   const failures: string[] = []
 
-  for (const link of links) {
+  for (const [index, link] of links.entries()) {
     try {
       resolved.push(await resolveTikTokVideo(link.url, link.isPinned))
     } catch (error) {
-      failures.push(`${link.url}: ${error instanceof Error ? error.message : String(error)}`)
+      const message = error instanceof Error ? error.message : String(error)
+      failures.push(`${link.url}: ${message}`)
+      if (isTikTokBlockMessage(message)) {
+        showToast('TikTok appears to be rate-limiting this session. Scan stopped to avoid making it worse.', true)
+        break
+      }
+    }
+
+    if (index < links.length - 1) {
+      if (timing.pauseEvery > 0 && (index + 1) % timing.pauseEvery === 0) {
+        showToast(`Safe scan pause after ${index + 1} videos...`, false)
+        await wait(randomBetween(...timing.pauseDelay))
+      } else {
+        await wait(randomBetween(...timing.resolveDelay))
+      }
     }
   }
 
@@ -169,7 +194,7 @@ type ProfileVideoLink = {
   isPinned: boolean
 }
 
-async function collectProfileVideoLinks(limit?: number) {
+async function collectProfileVideoLinks(limit: number | undefined, timing: ScanTiming) {
   const links = new Map<string, ProfileVideoLink>()
   let stagnantRounds = 0
   let lastCount = 0
@@ -187,7 +212,7 @@ async function collectProfileVideoLinks(limit?: number) {
     }
 
     window.scrollBy({ top: Math.max(window.innerHeight * 1.6, 1200), behavior: 'instant' as ScrollBehavior })
-    await wait(650)
+    await wait(randomBetween(...timing.scrollDelay))
   }
 
   return Array.from(links.values()).slice(0, limit)
@@ -200,6 +225,47 @@ function collectVisibleVideoLinks() {
       return url ? { url, isPinned: isPinnedVideoAnchor(anchor) } : undefined
     })
     .filter(Boolean) as ProfileVideoLink[]
+}
+
+function scanTiming(mode: TikTokScanMode): ScanTiming {
+  if (mode === 'fast') {
+    return {
+      scrollDelay: [450, 850],
+      resolveDelay: [250, 650],
+      pauseEvery: 0,
+      pauseDelay: [0, 0],
+    }
+  }
+  if (mode === 'slow') {
+    return {
+      scrollDelay: [1800, 3200],
+      resolveDelay: [3500, 7000],
+      pauseEvery: 5,
+      pauseDelay: [45000, 90000],
+    }
+  }
+  return {
+    scrollDelay: [900, 1800],
+    resolveDelay: [1500, 4000],
+    pauseEvery: 8,
+    pauseDelay: [18000, 45000],
+  }
+}
+
+function randomBetween(min: number, max: number) {
+  return Math.floor(min + Math.random() * Math.max(0, max - min))
+}
+
+function isTikTokBlockMessage(message: string) {
+  const lower = message.toLowerCase()
+  return (
+    lower.includes('access denied') ||
+    lower.includes('permission to access') ||
+    lower.includes('http 403') ||
+    lower.includes('http 429') ||
+    lower.includes('rate') ||
+    lower.includes('captcha')
+  )
 }
 
 async function resolveTikTokVideo(url: string, isPinned: boolean): Promise<ResolvedMediaItem> {
@@ -215,6 +281,9 @@ async function resolveTikTokVideo(url: string, isPinned: boolean): Promise<Resol
   }
 
   const html = await response.text()
+  if (looksLikeAccessDeniedPage(html)) {
+    throw new Error('Access Denied page returned by TikTok/Akamai.')
+  }
   const item = parseTikTokItemStruct(html)
   if (!item) {
     throw new Error('TikTok page state did not expose itemStruct.')
@@ -249,6 +318,11 @@ async function resolveTikTokVideo(url: string, isPinned: boolean): Promise<Resol
           .filter((entry: { url: string }) => entry.url)
       : [],
   }
+}
+
+function looksLikeAccessDeniedPage(html: string) {
+  const lower = html.slice(0, 3000).toLowerCase()
+  return lower.includes('access denied') && lower.includes("permission to access")
 }
 
 function isPinnedVideoAnchor(anchor: HTMLAnchorElement) {
