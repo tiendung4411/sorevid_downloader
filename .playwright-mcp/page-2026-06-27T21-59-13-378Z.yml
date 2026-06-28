@@ -1,0 +1,29 @@
+- generic [active] [ref=e1]:
+  - img
+  - generic [ref=e3]:
+    - generic [ref=e37]:
+      - generic [ref=e41]:
+        - generic [ref=e42]:
+          - generic [ref=e44]:
+            - heading "Vantaplay" [level=1] [ref=e46]
+            - heading "vantaplay_jp" [level=2] [ref=e48]
+          - heading "0 Following 692.7K Followers 13.6M Likes" [level=3] [ref=e49]:
+            - generic [ref=e50] [cursor=pointer]:
+              - strong [ref=e51]: "0"
+              - generic [ref=e52]: Following
+            - generic [ref=e53] [cursor=pointer]:
+              - strong [ref=e54]: 692.7K
+              - generic [ref=e55]: Followers
+            - generic [ref=e56]:
+              - strong [ref=e57]: 13.6M
+              - generic [ref=e58]: Likes
+        - heading "A fast-moving entertainment platform for bite-sized drama series built for daily viewing." [level=2] [ref=e65]
+      - generic:
+        - button "Actions"
+    - generic [ref=e72]:
+      - button [ref=e75] [cursor=pointer]:
+        - img [ref=e77]
+      - button [ref=e82] [cursor=pointer]:
+        - img [ref=e84]
+      - button "Log in" [ref=e89] [cursor=pointer]:
+        - generic [ref=e91]: Log in

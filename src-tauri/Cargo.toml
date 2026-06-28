@@ -20,7 +20,6 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 interprocess = "2.4.2"
 tauri = { version = "2.9.5", features = [] }
 tauri-plugin-dialog = "2.4.1"
-tauri-plugin-single-instance = "2.4.2"
 tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "sync"] }
 uuid = { version = "1", features = ["v4"] }
 which = "8"

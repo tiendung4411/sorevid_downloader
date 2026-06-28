@@ -1,0 +1,3 @@
+TikTok layout investigation bootstrap
+Target: https://www.tiktok.com/@vantaplay_jp
+Chrome tab before bootstrap: TikTok - Make Your Day, https://www.tiktok.com/@vantaplay_jp

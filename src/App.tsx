@@ -69,6 +69,9 @@ type DownloadEvent = {
 type MetadataPreview = {
   url: string
   sourceUrl: string
+  dramaId?: string
+  seriesName?: string
+  episodeNumber?: number
   title?: string
   thumbnail?: string
   duration?: number
@@ -124,6 +127,9 @@ type ResolvedMediaItem = {
   sourceUrl: string
   pageUrl: string
   mediaUrl: string
+  dramaId?: string
+  seriesName?: string
+  episodeNumber?: number
   title?: string
   uploader?: string
   duration?: number
@@ -229,6 +235,9 @@ type DirectDownloadItem = {
   sourceUrl: string
   pageUrl: string
   mediaUrl: string
+  dramaId?: string
+  seriesName?: string
+  episodeNumber?: number
   title?: string
   uploader?: string
   duration?: number
@@ -2634,6 +2643,9 @@ function metadataFromResolvedMedia(item: ResolvedMediaItem): MetadataPreview {
   return {
     url: item.sourceUrl,
     sourceUrl: item.sourceUrl,
+    dramaId: item.dramaId,
+    seriesName: item.seriesName,
+    episodeNumber: item.episodeNumber,
     title: item.title || item.sourceUrl,
     thumbnail: item.thumbnail,
     duration: item.duration,
@@ -2683,6 +2695,9 @@ function directDownloadItemFromMetadata(
     sourceUrl: item.sourceUrl,
     pageUrl: item.webpageUrl || item.url,
     mediaUrl: item.directMediaUrl || '',
+    dramaId: item.dramaId,
+    seriesName: item.seriesName,
+    episodeNumber: organized?.episodeNumber || item.episodeNumber,
     title: organized?.outputTitle || displayPartTitle(item),
     uploader: item.uploader,
     duration: item.duration,
@@ -2703,6 +2718,46 @@ function organizeMetadataBatch(
   edits: Record<string, BatchItemEdit>,
   order: BatchOrderMode,
 ): OrganizedSeries[] {
+  if (
+    metadata.length > 0 &&
+    metadata.every((item) => Boolean(item.seriesName?.trim()) && item.episodeNumber !== undefined)
+  ) {
+    const groups: OrganizedSeries[] = []
+    const orderedMetadata = orderMetadataForBatch(metadata, edits, order)
+
+    orderedMetadata.forEach((item, index) => {
+      const key = previewKey(item)
+      const edit = edits[key] || {}
+      const suggested = suggestBatchItem(item, index)
+      const seriesTitle = edit.seriesTitle?.trim() || item.seriesName?.trim() || suggested.seriesTitle || item.uploader || 'TikTok Series'
+      const episodeNumber = edit.episodeNumber || item.episodeNumber || suggested.episodeNumber || index + 1
+      const episodeTitle = edit.episodeTitle ?? suggested.episodeTitle ?? `Episode ${padEpisodeNumber(episodeNumber)}`
+      const outputTitle = buildEpisodeOutputTitle(seriesTitle, episodeNumber, episodeTitle)
+      const entry: OrganizedBatchItem = {
+        item,
+        key,
+        seriesTitle,
+        episodeNumber,
+        episodeTitle,
+        suggested,
+        outputTitle,
+      }
+      const groupId = normalizeGroupingKey(seriesTitle)
+      const group = groups.find((existing) => existing.id === groupId)
+      if (group) {
+        group.items.push(entry)
+      } else {
+        groups.push({
+          id: groupId,
+          title: seriesTitle,
+          items: [entry],
+        })
+      }
+    })
+
+    return groups
+  }
+
   const groups: OrganizedSeries[] = []
   const orderedMetadata = orderMetadataForBatch(metadata, edits, order)
   let currentFallbackGroup = 0
@@ -2782,9 +2837,9 @@ function orderMetadataForBatch(
 
 function suggestBatchItem(item: MetadataPreview, index: number): BatchItemEdit {
   const rawTitle = item.title?.trim() || displayPartTitle(item)
-  const episodeNumber = inferEpisodeNumber(rawTitle) || item.playlistIndex || index + 1
+  const episodeNumber = item.episodeNumber || inferEpisodeNumber(rawTitle) || item.playlistIndex || index + 1
   const stripped = stripEpisodeMarker(rawTitle).trim()
-  const seriesTitle = item.playlistTitle?.trim() || inferSeriesTitle(rawTitle, item.uploader)
+  const seriesTitle = item.seriesName?.trim() || item.playlistTitle?.trim() || inferSeriesTitle(rawTitle, item.uploader)
   const episodeTitle = stripped && stripped !== seriesTitle ? stripped : `Episode ${padEpisodeNumber(episodeNumber)}`
 
   return {

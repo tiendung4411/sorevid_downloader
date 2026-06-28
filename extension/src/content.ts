@@ -23,10 +23,17 @@ type ResolvedMediaItem = {
   height?: number
   subtitles?: ResolvedSubtitle[]
   isPinned?: boolean
+  dramaId?: string
+  seriesName?: string
+  episodeNumber?: number
 }
 
 type ScanProfileMessage = {
-  type: 'scan-tiktok-profile' | 'resolve-tiktok-urls'
+  type:
+    | 'scan-tiktok-profile'
+    | 'resolve-tiktok-urls'
+    | 'scan-tiktok-shortdrama'
+    | 'scan-tiktok-series'
   limit?: number
   mode?: TikTokScanMode
   urls?: string[]
@@ -43,7 +50,18 @@ type ScanTiming = {
 
 const hostMarker = 'sorevidPlayerButton'
 const shortDramaTabSelector = '[data-e2e="drama-tab"]'
+const dramaCaptureBuffer = new Map<string, any>()
 let scanTimer: number | undefined
+
+window.addEventListener('message', (event) => {
+  if (
+    event.source === window &&
+    event.data?.source === 'sorevid-drama-capture' &&
+    typeof event.data.url === 'string'
+  ) {
+    dramaCaptureBuffer.set(event.data.url, event.data.payload)
+  }
+})
 
 scanPlayers()
 const observer = new MutationObserver(scheduleScan)
@@ -55,6 +73,32 @@ setInterval(scanPlayers, 3000)
 chrome.runtime.onMessage.addListener((message: ScanProfileMessage, _sender, sendResponse) => {
   if (message?.type === 'resolve-tiktok-urls') {
     resolveTikTokUrls(message.urls || [], message.mode)
+      .then((items) => sendResponse({ ok: true, items }))
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          items: [],
+        })
+      })
+    return true
+  }
+
+  if (message?.type === 'scan-tiktok-shortdrama') {
+    scanTikTokShortDrama(message.limit, message.mode)
+      .then((items) => sendResponse({ ok: true, items }))
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          items: [],
+        })
+      })
+    return true
+  }
+
+  if (message?.type === 'scan-tiktok-series') {
+    scanTikTokSeriesFromVideo(message.limit, message.mode)
       .then((items) => sendResponse({ ok: true, items }))
       .catch((error) => {
         sendResponse({
@@ -91,6 +135,32 @@ async function resolveTikTokUrls(urls: string[], mode: TikTokScanMode = 'safe') 
     }
   }
   return resolved
+}
+
+async function waitForCapture(matchSubstring: string, timeoutMs = 15000): Promise<any> {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    for (const [url, payload] of dramaCaptureBuffer.entries()) {
+      if (url.includes(matchSubstring)) {
+        dramaCaptureBuffer.delete(url)
+        return payload
+      }
+    }
+    await wait(200)
+  }
+  throw new Error(`Timed out waiting for ${matchSubstring}`)
+}
+
+async function waitForSelector(selector: string, timeoutMs = 10000): Promise<Element> {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    const element = document.querySelector(selector)
+    if (element) {
+      return element
+    }
+    await wait(200)
+  }
+  throw new Error(`Timed out waiting for selector ${selector}`)
 }
 
 function scheduleScan() {
@@ -215,6 +285,183 @@ async function scanTikTokProfile(limit?: number, mode: TikTokScanMode = 'safe') 
   return resolved
 }
 
+async function scanTikTokShortDrama(limit?: number, mode: TikTokScanMode = 'safe'): Promise<ResolvedMediaItem[]> {
+  if (!isTikTokProfilePage()) {
+    throw new Error('Open a TikTok profile page before scanning.')
+  }
+
+  const timing = scanTiming(mode)
+  const scanLimit = typeof limit === 'number' && limit > 0 ? limit : undefined
+  dramaCaptureBuffer.clear()
+
+  const dramaTab = document.querySelector<HTMLElement>(shortDramaTabSelector)
+  if (!dramaTab) {
+    throw new Error('Short Drama tab was not found on this TikTok profile.')
+  }
+
+  if (dramaTab.getAttribute('aria-selected') !== 'true') {
+    dramaTab.click()
+  }
+  await waitForSelector('div[data-e2e="creator-drama-card"]', 10000)
+  await wait(randomBetween(...timing.scrollDelay))
+
+  const cards = Array.from(document.querySelectorAll<HTMLElement>('div[data-e2e="creator-drama-card"]'))
+  if (cards.length === 0) {
+    throw new Error('No Short Drama series cards found on this profile.')
+  }
+  const results: ResolvedMediaItem[] = []
+
+  dramaLoop: for (const card of cards) {
+    ;(card.closest('button') as HTMLElement | null || card).click()
+    await waitForSelector('[role=dialog][aria-label="Cinema mode"]')
+
+    const segments = Array.from(
+      document.querySelectorAll<HTMLElement>('[role=dialog][aria-label="Cinema mode"] button[data-testid="tux-segment-item"]'),
+    )
+
+    if (segments.length === 0) {
+      const episodePayload = await waitForCapture('/api/drama/episode/item_list/')
+      const itemList = Array.isArray(episodePayload?.itemList) ? episodePayload.itemList : []
+      for (const item of itemList) {
+        results.push(mapDramaEpisodeToResolved(item))
+        if (scanLimit && results.length >= scanLimit) {
+          break dramaLoop
+        }
+        await wait(randomBetween(...timing.resolveDelay))
+      }
+    } else {
+      for (const segment of segments) {
+        segment.click()
+        const episodePayload = await waitForCapture('/api/drama/episode/item_list/')
+        const itemList = Array.isArray(episodePayload?.itemList) ? episodePayload.itemList : []
+        for (const item of itemList) {
+          results.push(mapDramaEpisodeToResolved(item))
+          if (scanLimit && results.length >= scanLimit) {
+            break dramaLoop
+          }
+          await wait(randomBetween(...timing.resolveDelay))
+        }
+      }
+    }
+
+    const closeButton =
+      document.querySelector<HTMLElement>('[role=dialog][aria-label="Cinema mode"] button[aria-label]') || null
+    if (closeButton) {
+      closeButton.click()
+    } else if (document.querySelector('[role=dialog]')) {
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    }
+
+    await wait(randomBetween(...timing.scrollDelay))
+  }
+
+  if (results.length === 0) {
+    throw new Error('No Short Drama episodes were resolved from this profile.')
+  }
+
+  return scanLimit ? results.slice(0, scanLimit) : results
+}
+
+async function scanTikTokSeriesFromVideo(
+  limit?: number,
+  mode: TikTokScanMode = 'safe',
+): Promise<ResolvedMediaItem[]> {
+  if (!/\/@[^/]+\/video\/\d+/.test(location.pathname)) {
+    throw new Error('Open a TikTok drama video page before downloading the series.')
+  }
+
+  const timing = scanTiming(mode)
+  const scanLimit = typeof limit === 'number' && limit > 0 ? limit : undefined
+  const results: ResolvedMediaItem[] = []
+  dramaCaptureBuffer.clear()
+
+  try {
+    await waitForSelector('[role=dialog][aria-label="Cinema mode"], section', 12000)
+  } catch {
+    // Ignore missing player container and continue with API/capture lookup.
+  }
+
+  let apiUrl = performance
+    .getEntriesByType('resource')
+    .map((resource) => (resource as PerformanceResourceTiming).name)
+    .reverse()
+    .find((url) => url.includes('/api/drama/episode/item_list/'))
+
+  if (!apiUrl) {
+    const segments = Array.from(document.querySelectorAll<HTMLElement>('button[data-testid="tux-segment-item"]'))
+    if (segments.length > 0) {
+      segments[0].click()
+      await wait(randomBetween(...timing.scrollDelay))
+      apiUrl = performance
+        .getEntriesByType('resource')
+        .map((resource) => (resource as PerformanceResourceTiming).name)
+        .reverse()
+        .find((url) => url.includes('/api/drama/episode/item_list/'))
+    }
+  }
+
+  if (!apiUrl) {
+    const cap = await waitForCapture('/api/drama/episode/item_list/')
+    const itemList = Array.isArray(cap?.itemList) ? cap.itemList : []
+    for (const item of itemList) {
+      const resolvedItem = mapDramaEpisodeToResolved(item)
+      if (!resolvedItem.mediaUrl) {
+        console.warn('[sorevid] episode missing media URL', resolvedItem.episodeNumber, item?.id, item?.desc)
+      }
+      results.push(resolvedItem)
+      if (scanLimit && results.length >= scanLimit) {
+        break
+      }
+    }
+  } else {
+    const base = new URL(apiUrl)
+    const dramaID = base.searchParams.get('dramaID')
+    if (!dramaID) {
+      throw new Error('Could not determine dramaID from the TikTok player.')
+    }
+
+    pageLoop: for (let cursor = 0; ; cursor += 24) {
+      const url = new URL(base.toString())
+      url.searchParams.set('count', '24')
+      url.searchParams.set('cursor', String(cursor))
+      url.searchParams.set('dramaID', dramaID)
+
+      const payload = await fetch(url.toString(), { credentials: 'include' }).then((response) => response.json())
+      const itemList = Array.isArray(payload?.itemList) ? payload.itemList : []
+      if (itemList.length === 0) {
+        break
+      }
+
+      for (const item of itemList) {
+        const resolvedItem = mapDramaEpisodeToResolved(item)
+        if (!resolvedItem.mediaUrl) {
+          console.warn('[sorevid] episode missing media URL', resolvedItem.episodeNumber, item?.id, item?.desc)
+        }
+        results.push(resolvedItem)
+        if (scanLimit && results.length >= scanLimit) {
+          break pageLoop
+        }
+      }
+
+      const hasMore = payload?.hasMore === true
+      if (!hasMore) {
+        break
+      }
+
+      await wait(randomBetween(...timing.resolveDelay))
+    }
+  }
+
+  const withMedia = results.filter((entry) => Boolean(entry.mediaUrl)).length
+  console.debug('[sorevid] series scan complete', { total: results.length, withMedia })
+
+  if (results.length === 0) {
+    throw new Error('No episodes were resolved from this drama.')
+  }
+
+  return scanLimit ? results.slice(0, scanLimit) : results
+}
+
 type ProfileVideoLink = {
   url: string
   isPinned: boolean
@@ -336,6 +583,38 @@ async function resolveTikTokVideo(url: string, isPinned: boolean): Promise<Resol
     isPinned,
     subtitles: Array.isArray(video.subtitleInfos)
       ? video.subtitleInfos
+          .map((entry: any) => ({
+            format: entry?.Format,
+            language: entry?.LanguageCodeName || entry?.languageCode,
+            url: cleanUrl(entry?.Url),
+          }))
+          .filter((entry: { url: string }) => entry.url)
+      : [],
+  }
+}
+
+function mapDramaEpisodeToResolved(item: any): ResolvedMediaItem {
+  const fmt = choosePreferredFormat(item?.video)
+  const uniqueId = item?.author?.uniqueId || item?.dramaInfo?.authorUID || ''
+  const pageUrl = `https://www.tiktok.com/@${uniqueId}/video/${item?.id || ''}`
+
+  return {
+    sourceUrl: pageUrl,
+    pageUrl,
+    mediaUrl: fmt?.url || '',
+    title: item?.desc,
+    uploader: item?.author?.uniqueId,
+    duration: typeof item?.video?.duration === 'number' ? item.video.duration : undefined,
+    thumbnail: cleanUrl(item?.video?.cover || item?.video?.originCover || item?.video?.dynamicCover),
+    videoCodec: fmt?.videoCodec,
+    audioCodec: fmt?.audioCodec,
+    width: fmt?.width,
+    height: fmt?.height,
+    dramaId: item?.dramaInfo?.dramaID,
+    seriesName: item?.dramaInfo?.dramaName,
+    episodeNumber: numericValue(item?.dramaInfo?.DramaVideoData?.EpisodeNumber),
+    subtitles: Array.isArray(item?.video?.subtitleInfos)
+      ? item.video.subtitleInfos
           .map((entry: any) => ({
             format: entry?.Format,
             language: entry?.LanguageCodeName || entry?.languageCode,

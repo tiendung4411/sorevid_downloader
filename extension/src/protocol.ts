@@ -13,6 +13,9 @@ export type ResolvedMediaItem = {
   sourceUrl: string
   pageUrl: string
   mediaUrl: string
+  dramaId?: string
+  seriesName?: string
+  episodeNumber?: number
   title?: string
   uploader?: string
   duration?: number

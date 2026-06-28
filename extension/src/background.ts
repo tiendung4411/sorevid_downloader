@@ -24,6 +24,24 @@ type ScanProfileMessage = {
   mode?: TikTokScanMode
 }
 
+type ScanShortDramaMessage = {
+  type: 'scan-shortdrama'
+  tabId: number
+  pageUrl: string
+  title?: string
+  limit?: number
+  mode?: TikTokScanMode
+}
+
+type ScanSeriesMessage = {
+  type: 'scan-series'
+  tabId: number
+  pageUrl: string
+  title?: string
+  limit?: number
+  mode?: TikTokScanMode
+}
+
 type ScanTikTokProfileResponse = {
   ok: boolean
   error?: string
@@ -32,6 +50,18 @@ type ScanTikTokProfileResponse = {
 
 type ScanTikTokProfileMessage = {
   type: 'scan-tiktok-profile'
+  limit?: number
+  mode?: TikTokScanMode
+}
+
+type ScanTikTokShortDramaMessage = {
+  type: 'scan-tiktok-shortdrama'
+  limit?: number
+  mode?: TikTokScanMode
+}
+
+type ScanTikTokSeriesMessage = {
+  type: 'scan-tiktok-series'
   limit?: number
   mode?: TikTokScanMode
 }
@@ -68,11 +98,11 @@ chrome.runtime.onInstalled.addListener(() => {
       documentUrlPatterns: supportedPatterns,
     })
   })
-  chrome.alarms.create('sorevid-browser-fallback', { periodInMinutes: 0.5 })
+  chrome.alarms.create('sorevid-browser-fallback', { periodInMinutes: 5 })
 })
 
 chrome.runtime.onStartup.addListener(() => {
-  chrome.alarms.create('sorevid-browser-fallback', { periodInMinutes: 0.5 })
+  chrome.alarms.create('sorevid-browser-fallback', { periodInMinutes: 5 })
 })
 
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -105,7 +135,11 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 })
 
 chrome.runtime.onMessage.addListener(
-  (message: SendUrlMessage | ScanProfileMessage, _sender, sendResponse: (response: NativeResponse) => void) => {
+  (
+    message: SendUrlMessage | ScanProfileMessage | ScanShortDramaMessage | ScanSeriesMessage,
+    _sender,
+    sendResponse: (response: NativeResponse) => void,
+  ) => {
     if (message?.type === 'send-url') {
       sendUrl(message.url, message.title, message.trigger)
         .then(sendResponse)
@@ -133,6 +167,28 @@ chrome.runtime.onMessage.addListener(
             message: error instanceof Error ? error.message : String(error),
           })
         })
+      return true
+    }
+
+    if (message?.type === 'scan-shortdrama') {
+      scanTikTokShortDrama(message.tabId, message.pageUrl, message.title, message.limit, message.mode)
+        .then(sendResponse)
+        .catch((error) => {
+          sendResponse({
+            version: 1,
+            id: '',
+            ok: false,
+            code: 'app_unavailable',
+            message: error instanceof Error ? error.message : String(error),
+          })
+        })
+      return true
+    }
+
+    if (message?.type === 'scan-series') {
+      scanTikTokSeries(message.tabId, message.pageUrl, message.title, message.limit, message.mode)
+        .then(sendResponse)
+        .catch((error) => { sendResponse({ version: 1, id: '', ok: false, code: 'app_unavailable', message: error instanceof Error ? error.message : String(error) }) })
       return true
     }
 
@@ -330,6 +386,106 @@ export async function scanTikTokProfile(
   })
 }
 
+export async function scanTikTokShortDrama(
+  tabId: number,
+  pageUrl: string,
+  title?: string,
+  limit?: number,
+  mode?: TikTokScanMode,
+) {
+  const response = await sendTikTokShortDramaScanMessage(tabId, limit, mode)
+
+  if (!response?.ok) {
+    throw new Error(response?.error || 'TikTok scan failed.')
+  }
+
+  if (!response.items?.length) {
+    throw new Error('No TikTok videos were resolved from this profile.')
+  }
+  const cookieHeader = await tiktokCookieHeader(pageUrl)
+  const items = cookieHeader
+    ? response.items.map((item) => ({ ...item, cookieHeader }))
+    : response.items
+
+  const request: NativeRequest = {
+    version: 1,
+    id: requestId(),
+    action: 'import_resolved_media',
+    items,
+    source: {
+      pageUrl,
+      title,
+      platform: 'tiktok',
+      trigger: 'profile-scan',
+    },
+  }
+
+  return new Promise<NativeResponse>((resolve, reject) => {
+    chrome.runtime.sendNativeMessage(NATIVE_HOST, request, (nativeResponse: NativeResponse | undefined) => {
+      const error = chrome.runtime.lastError
+      if (error) {
+        reject(new Error(nativeErrorMessage(error.message || 'Unknown native messaging error.')))
+        return
+      }
+      if (!nativeResponse) {
+        reject(new Error('Sorevid did not return a response.'))
+        return
+      }
+      resolve(nativeResponse)
+    })
+  })
+}
+
+export async function scanTikTokSeries(
+  tabId: number,
+  pageUrl: string,
+  title?: string,
+  limit?: number,
+  mode?: TikTokScanMode,
+) {
+  const response = await sendTikTokSeriesScanMessage(tabId, limit, mode)
+
+  if (!response?.ok) {
+    throw new Error(response?.error || 'TikTok scan failed.')
+  }
+
+  if (!response.items?.length) {
+    throw new Error('No TikTok videos were resolved from this profile.')
+  }
+  const cookieHeader = await tiktokCookieHeader(pageUrl)
+  const items = cookieHeader
+    ? response.items.map((item) => ({ ...item, cookieHeader }))
+    : response.items
+
+  const request: NativeRequest = {
+    version: 1,
+    id: requestId(),
+    action: 'import_resolved_media',
+    items,
+    source: {
+      pageUrl,
+      title,
+      platform: 'tiktok',
+      trigger: 'profile-scan',
+    },
+  }
+
+  return new Promise<NativeResponse>((resolve, reject) => {
+    chrome.runtime.sendNativeMessage(NATIVE_HOST, request, (nativeResponse: NativeResponse | undefined) => {
+      const error = chrome.runtime.lastError
+      if (error) {
+        reject(new Error(nativeErrorMessage(error.message || 'Unknown native messaging error.')))
+        return
+      }
+      if (!nativeResponse) {
+        reject(new Error('Sorevid did not return a response.'))
+        return
+      }
+      resolve(nativeResponse)
+    })
+  })
+}
+
 async function tiktokCookieHeader(pageUrl: string) {
   try {
     const parsed = new URL(pageUrl)
@@ -359,6 +515,54 @@ async function sendTikTokScanMessage(tabId: number, limit?: number, mode?: TikTo
     await injectContentScript(tabId)
     await wait(250)
     return chrome.tabs.sendMessage<ScanTikTokProfileMessage, ScanTikTokProfileResponse>(
+      tabId,
+      message,
+    )
+  }
+}
+
+async function sendTikTokShortDramaScanMessage(
+  tabId: number,
+  limit?: number,
+  mode?: TikTokScanMode,
+) {
+  const message = { type: 'scan-tiktok-shortdrama' as const, limit, mode }
+  try {
+    return await chrome.tabs.sendMessage<ScanTikTokShortDramaMessage, ScanTikTokProfileResponse>(
+      tabId,
+      message,
+    )
+  } catch (error) {
+    if (!isMissingContentScriptError(error)) {
+      throw error
+    }
+    await injectContentScript(tabId)
+    await wait(250)
+    return chrome.tabs.sendMessage<ScanTikTokShortDramaMessage, ScanTikTokProfileResponse>(
+      tabId,
+      message,
+    )
+  }
+}
+
+async function sendTikTokSeriesScanMessage(
+  tabId: number,
+  limit?: number,
+  mode?: TikTokScanMode,
+) {
+  const message = { type: 'scan-tiktok-series' as const, limit, mode }
+  try {
+    return await chrome.tabs.sendMessage<ScanTikTokSeriesMessage, ScanTikTokProfileResponse>(
+      tabId,
+      message,
+    )
+  } catch (error) {
+    if (!isMissingContentScriptError(error)) {
+      throw error
+    }
+    await injectContentScript(tabId)
+    await wait(250)
+    return chrome.tabs.sendMessage<ScanTikTokSeriesMessage, ScanTikTokProfileResponse>(
       tabId,
       message,
     )

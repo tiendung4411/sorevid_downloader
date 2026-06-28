@@ -93,6 +93,12 @@ struct ResolvedMediaItem {
     source_url: String,
     page_url: String,
     media_url: String,
+    #[serde(default)]
+    drama_id: Option<String>,
+    #[serde(default)]
+    series_name: Option<String>,
+    #[serde(default)]
+    episode_number: Option<u64>,
     title: Option<String>,
     uploader: Option<String>,
     duration: Option<f64>,
@@ -552,6 +558,13 @@ fn handle_native_host_request(request: NativeRequest) -> NativeResponse {
     match send_ipc_request(&request) {
         Ok(response) => response,
         Err(_) => {
+            if matches!(
+                request.action.as_str(),
+                "drain_browser_downloads" | "drain_rescan_items"
+            ) {
+                return response_error(request.id, "app_unavailable", "Sorevid is not running.");
+            }
+
             if let Err(error) = start_gui_app() {
                 return response_error(request.id, "app_unavailable", &error);
             }
@@ -641,11 +654,64 @@ fn start_gui_app() -> Result<(), String> {
 
 fn start_ipc_server(app: AppHandle, extension_state: ExtensionState) {
     thread::spawn(move || {
-        let Ok(name) = IPC_NAME.to_ns_name::<GenericNamespaced>() else {
-            return;
+        let create_listener = || {
+            let name = IPC_NAME.to_ns_name::<GenericNamespaced>()?;
+            ListenerOptions::new().name(name).create_sync()
         };
-        let Ok(listener) = ListenerOptions::new().name(name).create_sync() else {
-            return;
+
+        let listener = match create_listener() {
+            Ok(listener) => listener,
+            Err(_error) => {
+                #[cfg(unix)]
+                {
+                    if let Ok(name) = IPC_NAME.to_ns_name::<GenericNamespaced>() {
+                        if LocalSocketStream::connect(name).is_ok() {
+                            eprintln!(
+                                "[sorevid] IPC server already running; skipping duplicate instance."
+                            );
+                            return;
+                        }
+                    }
+
+                    let mut socket_paths = vec![format!("/tmp/{IPC_NAME}")];
+                    if let Ok(tmpdir) = std::env::var("TMPDIR") {
+                        socket_paths.push(format!(
+                            "{}/{}",
+                            tmpdir.trim_end_matches('/'),
+                            IPC_NAME
+                        ));
+                    }
+                    if let Ok(xdg_runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+                        socket_paths.push(format!(
+                            "{}/{}",
+                            xdg_runtime_dir.trim_end_matches('/'),
+                            IPC_NAME
+                        ));
+                    }
+
+                    for socket_path in socket_paths {
+                        match fs::remove_file(&socket_path) {
+                            Ok(_) => {}
+                            Err(remove_error)
+                                if remove_error.kind() == io::ErrorKind::NotFound => {}
+                            Err(remove_error) => {
+                                eprintln!(
+                                    "[sorevid] Failed to remove stale IPC socket {}: {}",
+                                    socket_path, remove_error
+                                );
+                            }
+                        }
+                    }
+                }
+
+                match create_listener() {
+                    Ok(listener) => listener,
+                    Err(error) => {
+                        eprintln!("[sorevid] Failed to start IPC server: {error}");
+                        return;
+                    }
+                }
+            }
         };
 
         for connection in listener.incoming().flatten() {
@@ -774,6 +840,9 @@ fn process_gui_request(
                 source_url,
                 page_url,
                 media_url: media_url.to_string(),
+                drama_id: item.drama_id.clone(),
+                series_name: item.series_name.clone(),
+                episode_number: item.episode_number,
                 title: item.title.clone(),
                 uploader: item.uploader.clone(),
                 duration: item.duration,
@@ -1105,7 +1174,34 @@ fn install_chrome_integration(app: AppHandle) -> Result<ChromeIntegrationStatus,
         return Ok(chrome_integration_status(&app));
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let executable = std::env::current_exe()
+            .map_err(|error| format!("Could not locate Sorevid executable: {error}"))?;
+        let manifest = serde_json::json!({
+            "name": NATIVE_HOST_NAME,
+            "description": "Sorevid Downloader Chrome integration",
+            "path": executable,
+            "type": "stdio",
+            "allowed_origins": [EXTENSION_ORIGIN]
+        });
+        let manifest_path = chrome_native_messaging_manifest_path_macos()?;
+        let parent = manifest_path
+            .parent()
+            .ok_or_else(|| "Could not resolve Chrome integration folder.".to_string())?;
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Failed to create Chrome integration folder: {error}"))?;
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest)
+                .map_err(|error| format!("Failed to serialize native host manifest: {error}"))?,
+        )
+        .map_err(|error| format!("Failed to write native host manifest: {error}"))?;
+
+        return Ok(chrome_integration_status(&app));
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
     Err("Chrome integration installation is currently supported on Windows only.".to_string())
 }
 
@@ -1136,7 +1232,20 @@ fn remove_chrome_integration(app: AppHandle) -> Result<ChromeIntegrationStatus, 
         return Ok(chrome_integration_status(&app));
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let manifest_path = chrome_native_messaging_manifest_path_macos()?;
+        match fs::remove_file(manifest_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!("Failed to remove native host manifest: {error}"));
+            }
+        }
+        return Ok(chrome_integration_status(&app));
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
     Err("Chrome integration removal is currently supported on Windows only.".to_string())
 }
 
@@ -1170,6 +1279,7 @@ fn test_chrome_integration(app: AppHandle) -> Result<String, String> {
     }
 }
 
+#[cfg(windows)]
 fn native_host_manifest_path(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_config_dir()
@@ -1180,7 +1290,23 @@ fn native_host_manifest_path(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("Could not resolve app config directory: {error}"))
 }
 
+fn chrome_native_messaging_manifest_path_macos() -> Result<PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|error| {
+        format!("Could not resolve HOME directory for Chrome integration: {error}")
+    })?;
+    Ok(PathBuf::from(home)
+        .join("Library")
+        .join("Application Support")
+        .join("Google")
+        .join("Chrome")
+        .join("NativeMessagingHosts")
+        .join(format!("{NATIVE_HOST_NAME}.json")))
+}
+
 fn chrome_integration_status(app: &AppHandle) -> ChromeIntegrationStatus {
+    #[cfg(not(windows))]
+    let _ = app;
+
     #[cfg(windows)]
     {
         use winreg::{enums::HKEY_CURRENT_USER, RegKey};
@@ -1256,7 +1382,64 @@ fn chrome_integration_status(app: &AppHandle) -> ChromeIntegrationStatus {
         };
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let manifest_path = match chrome_native_messaging_manifest_path_macos() {
+            Ok(path) => path,
+            Err(error) => {
+                return ChromeIntegrationStatus {
+                    state: "invalid".to_string(),
+                    message: error,
+                    manifest_path: None,
+                    extension_id: EXTENSION_ID.to_string(),
+                };
+            }
+        };
+
+        if !manifest_path.is_file() {
+            return ChromeIntegrationStatus {
+                state: "notInstalled".to_string(),
+                message: "Desktop bridge is not registered with Chrome.".to_string(),
+                manifest_path: Some(manifest_path.display().to_string()),
+                extension_id: EXTENSION_ID.to_string(),
+            };
+        }
+
+        let valid_manifest = fs::read_to_string(&manifest_path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .map(|value| {
+                value.get("name").and_then(|value| value.as_str()) == Some(NATIVE_HOST_NAME)
+                    && value
+                        .get("allowed_origins")
+                        .and_then(|value| value.as_array())
+                        .map(|origins| {
+                            origins
+                                .iter()
+                                .any(|origin| origin.as_str() == Some(EXTENSION_ORIGIN))
+                        })
+                        .unwrap_or(false)
+            })
+            .unwrap_or(false);
+
+        return if valid_manifest {
+            ChromeIntegrationStatus {
+                state: "installed".to_string(),
+                message: "Desktop bridge is registered. The extension must still be loaded in Chrome.".to_string(),
+                manifest_path: Some(manifest_path.display().to_string()),
+                extension_id: EXTENSION_ID.to_string(),
+            }
+        } else {
+            ChromeIntegrationStatus {
+                state: "invalid".to_string(),
+                message: "Desktop bridge registration exists but its native host manifest is invalid.".to_string(),
+                manifest_path: Some(manifest_path.display().to_string()),
+                extension_id: EXTENSION_ID.to_string(),
+            }
+        };
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
     ChromeIntegrationStatus {
         state: "invalid".to_string(),
         message: "Chrome integration is currently supported on Windows only.".to_string(),
@@ -3625,9 +3808,6 @@ fn format_bytes(value: u64) -> String {
 
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            focus_main_window(app);
-        }))
         .plugin(tauri_plugin_dialog::init())
         .manage(DownloadState::default())
         .manage(ExtensionState::default())
