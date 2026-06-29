@@ -19,6 +19,10 @@ import {
   Upload,
   X,
 } from 'lucide-react'
+import backgroundVideo from './assets/background.mp4'
+import errorNotificationSound from './assets/sounds/error.wav'
+import normalNotificationSound from './assets/sounds/normal.wav'
+import successfulNotificationSound from './assets/sounds/succesful.wav'
 import './App.css'
 
 type DownloadPreset =
@@ -333,32 +337,18 @@ function playNotificationTone(tone: AudioNotificationTone) {
   if (!context) return
 
   void context.resume().then(() => {
-    const startedAt = context.currentTime
-    const tones: Record<AudioNotificationTone, number[]> = {
-      start: [660, 880],
-      progress: [740],
-      complete: [660, 880, 1175],
-      failed: [220, 165],
+    const soundByTone: Record<AudioNotificationTone, string> = {
+      start: normalNotificationSound,
+      progress: normalNotificationSound,
+      complete: successfulNotificationSound,
+      failed: errorNotificationSound,
     }
-    const duration = tone === 'progress' ? 0.09 : 0.13
 
-    tones[tone].forEach((frequency, index) => {
-      const oscillator = context.createOscillator()
-      const gain = context.createGain()
-      const noteStart = startedAt + index * (duration + 0.035)
-      const noteEnd = noteStart + duration
+    const audio = new Audio(soundByTone[tone])
+    audio.volume = 0.4
+    audio.currentTime = 0
 
-      oscillator.type = tone === 'failed' ? 'sawtooth' : 'sine'
-      oscillator.frequency.setValueAtTime(frequency, noteStart)
-      gain.gain.setValueAtTime(0.0001, noteStart)
-      gain.gain.exponentialRampToValueAtTime(tone === 'failed' ? 0.08 : 0.055, noteStart + 0.015)
-      gain.gain.exponentialRampToValueAtTime(0.0001, noteEnd)
-
-      oscillator.connect(gain)
-      gain.connect(context.destination)
-      oscillator.start(noteStart)
-      oscillator.stop(noteEnd + 0.02)
-    })
+    void audio.play().catch(() => undefined)
   }).catch(() => undefined)
 }
 
@@ -1495,11 +1485,14 @@ function App() {
 
   return (
     <main className="app-shell">
+      <video className="app-bg-video" autoPlay loop muted playsInline>
+        <source src={backgroundVideo} type="video/mp4" />
+      </video>
       <section className="workspace">
         <header className="topbar">
           <div>
             <p className="eyebrow">yt-dlp desktop client</p>
-            <h1>BiliBili Downloader</h1>
+            <h1>SOREVID Downloader</h1>
           </div>
           <div className="topbar-actions">
             <nav className="page-tabs" aria-label="App sections">
@@ -1526,7 +1519,7 @@ function App() {
         </header>
 
         {activeTab === 'settings' && (
-          <>
+          <div className="tab-panel">
             <section className="tool-strip" aria-label="Tool versions">
               <ToolBadge label="yt-dlp" tool={tools.ytDlp} />
               <ToolBadge label="ffmpeg" tool={tools.ffmpeg} />
@@ -1802,11 +1795,11 @@ function App() {
             </span>
           </div>
             </section>
-          </>
+          </div>
         )}
 
         {activeTab === 'download' && (
-        <section className="download-panel">
+        <section className="download-panel tab-panel">
           <div className="field-block">
             <label htmlFor="urls">URLs</label>
             <textarea
@@ -1889,6 +1882,11 @@ function App() {
           <div>
             <Terminal />
             <h2>Queue</h2>
+            {jobs.length > 0 && (
+              <span className="queue-progress">
+                {jobs.filter((job) => job.status === 'completed').length}/{jobs.length} downloaded
+              </span>
+            )}
           </div>
           <button
             className="secondary-button"
@@ -2489,11 +2487,11 @@ function JobItem({
         <div className="job-actions">
           <button className="secondary-button" type="button" onClick={() => onOpen(job.outputPath!)}>
             <FileText />
-            <span>Open file</span>
+            <span>Open</span>
           </button>
           <button className="secondary-button" type="button" onClick={() => onReveal(job.outputPath!)}>
             <FolderOpen />
-            <span>Open folder</span>
+            <span>Folder</span>
           </button>
           {canConvert && (
             <button

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "BiliBili Downloader",
+  "productName": "SOREVID Downloader",
   "version": "0.1.0",
   "identifier": "com.bilibili-downloader.desktop",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "BiliBili Downloader",
+        "title": "SOREVID Downloader",
         "width": 1180,
         "height": 780,
         "minWidth": 900,

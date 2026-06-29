@@ -772,7 +772,6 @@ fn process_gui_request(
         return response_error(request.id, "invalid_request", &message);
     }
 
-    focus_main_window(app);
     if request.action == "ping" {
         return response_ok(request.id, "Sorevid is connected.", None);
     }
@@ -826,6 +825,7 @@ fn process_gui_request(
     }
 
     if request.action == "import_resolved_media" {
+        focus_main_window(app);
         let mut accepted_items = Vec::new();
 
         for item in &request.items {
@@ -924,6 +924,7 @@ fn process_gui_request(
         );
     }
 
+    focus_main_window(app);
     if let Ok(mut pending) = extension_state.pending_urls.lock() {
         for url in &accepted_urls {
             if !pending.contains(url) {
@@ -1572,7 +1573,7 @@ async fn download_cover(request: CoverRequest) -> Result<CoverResult, String> {
         .get(&request.thumbnail_url)
         .header(
             reqwest::header::USER_AGENT,
-            "Mozilla/5.0 BiliBili Downloader",
+            "Mozilla/5.0 SOREVID Downloader",
         )
         .send()
         .await
